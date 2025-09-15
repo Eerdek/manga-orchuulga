@@ -16,6 +16,19 @@ def render_translations(img_path: str, boxes: List[OCRBox], translations: List[s
     img = Image.open(img_path).convert("RGBA")
     draw = ImageDraw.Draw(img, "RGBA")
 
+        # --- guard: align translations length with boxes length ---
+    if translations is None:
+        # no translations? -> keep originals so we skip drawing (src==dst)
+        translations = [b.text for b in boxes]
+    elif len(translations) != len(boxes):
+        # normalize lengths: truncate or pad with original text
+        if len(translations) > len(boxes):
+            translations = translations[:len(boxes)]
+        else:
+            # pad with originals so those indices will be skipped (src == dst)
+            translations = translations + [b.text for b in boxes[len(translations):]]
+
+
     # First pass: sample local background color per box and draw a soft rect to match
     box_rects = []
     box_text_colors = []

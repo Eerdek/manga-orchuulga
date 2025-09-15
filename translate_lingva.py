@@ -82,12 +82,6 @@ def tm_put(source: str, target: str, model: str = "lingva"):
 PUNCT_EXTRA = "…“”‘’—–-"
 PUNCT = set(string.punctuation + PUNCT_EXTRA)
 
-def _normalize_token(s: str) -> str:
-    return "".join(ch for ch in s.strip().lower() if ch not in PUNCT and not ch.isspace())
-
-# KEEP_AS_IS-ийг normalization хийсэн сет болгон бэлдье
-_KEEP_NORM = {_normalize_token(t) for t in (KEEP_AS_IS or set())}
-
 # Punctuation-гүй lowercase түлхүүр бүхий glossary
 _NORMALIZED_GLOSSARY = {}
 for _k, _v in GLOSSARY_MAP.items():
@@ -96,6 +90,23 @@ for _k, _v in GLOSSARY_MAP.items():
     nk = "".join(ch for ch in _k.lower() if ch not in PUNCT).strip()
     if nk:
         _NORMALIZED_GLOSSARY[nk] = _v
+
+# --- normalization helpers for KEEP/Glossary ---
+def _normalize_token(s: str) -> str:
+    return "".join(ch for ch in s.strip().lower()
+                   if ch not in PUNCT and not ch.isspace())
+
+# All normalized glossary keys (to avoid KEEP clashes)
+_GLOSS_NORM_KEYS = {
+    _normalize_token(k) for k in (GLOSSARY_MAP or {}).keys() if k
+}
+
+# Normalized KEEP_AS_IS, but exclude anything that overlaps with the glossary
+_KEEP_NORM = {
+    _normalize_token(t)
+    for t in (KEEP_AS_IS or set())
+    if _normalize_token(t) and _normalize_token(t) not in _GLOSS_NORM_KEYS
+}
 
 def apply_glossary(text: str) -> Optional[str]:
     """
@@ -208,17 +219,20 @@ def translate_lines_impl(lines,
             tm_put(s, results[i], "sfx")
             continue
 
-        # 1) Орчуулахгүй токенууд (KEEP_AS_IS)
-        if _normalize_token(s) in _KEEP_NORM:
-            results[i] = s  # TM-д хадгалахгүй
-            continue
+        # 1) SFX handled above
 
-        # 2) Glossary (punct-aware)
+        # 2) Glossary (punct-aware) FIRST
         g = apply_glossary(s)
         if g is not None:
             out = post_polish_mn(g) if do_polish else g
             results[i] = out
             tm_put(s, out, "glossary")
+            continue
+
+        # 3) KEEP_AS_IS — only keep those that don't collide with glossary
+        if _normalize_token(s) in _KEEP_NORM:
+            results[i] = s
+            tm_put(s, s, "keep")
             continue
 
         # 3) TM cache (source-той адил биш үед л ашиглана)
@@ -247,7 +261,7 @@ def translate_lines_impl(lines,
                 tm_put(s, final, "local-fallback")
 
     # >>> ХАМГИЙН ЧУХАЛ: үргэлж жагсаалт буцаа <<<
-    return [r or "" for r in results]
+    return results
 
 def translate_lines(lines, source_lang: str = SRC_DEFAULT, target_lang: str = TGT_DEFAULT,
                     reflow=False, do_polish=True, system_override: Optional[str]=None):

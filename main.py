@@ -122,6 +122,7 @@ def process_image(path: str, out_dir: str, font_path: str, max_chars: int, line_
                                  "Keep the tone casual and short; fit speech balloons.")
                     translations = translate_lines_impl(src_lines, system_override=manga_sys, local_only=local_only)
                 else:
+                    # ❌ reflow-г painter дээр хэрэглэхгүй
                     translations = translate_lines(src_lines) if not local_only else translate_lines_impl(src_lines, local_only=True)
                 _debug_dump("translations", translations)
 
@@ -207,6 +208,7 @@ def process_image(path: str, out_dir: str, font_path: str, max_chars: int, line_
                                  "Keep the tone casual and short; fit speech balloons.")
                     part_translations = translate_lines_impl(src_lines, system_override=manga_sys, local_only=local_only)
                 else:
+                    # ❌ reflow-г painter дээр хэрэглэхгүй
                     part_translations = translate_lines(src_lines) if not local_only else translate_lines_impl(src_lines, local_only=True)
                 _debug_dump("translations(part)", part_translations)
 
@@ -249,6 +251,7 @@ def process_image(path: str, out_dir: str, font_path: str, max_chars: int, line_
                              "Keep the tone casual and short; fit speech balloons.")
                 translations = translate_lines_impl(src_lines, system_override=manga_sys, local_only=local_only)
             else:
+                # ❌ reflow-г painter дээр хэрэглэхгүй
                 translations = translate_lines(src_lines) if not local_only else translate_lines_impl(src_lines, local_only=True)
             _debug_dump("translations", translations)
 
