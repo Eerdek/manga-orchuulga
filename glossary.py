@@ -1,30 +1,104 @@
-# glossary.py
+# glossary.py (илүү баригддаг, манга-д ээлтэй глоссари)
 
-# glossary.py (зөвлөмж)
+# ---------------------------------------------------------
+# ҮГ/ХОС ҮГ/ӨГӨГДӨЛ → МОНГОЛ (кейст мэдрэмтгий биш байхаар
+# translate_lingva.py дотор normalization хийдэг гэж үзэж байна)
+# ---------------------------------------------------------
 GLOSSARY_MAP = {
+    # энгийн мэнд & дуудах
     "hey": "хөөё",
-    "honey": "хонгороо",
+    "hey,": "хөөё,",
+    "hey.": "хөөё.",
+    "honey": "хайраа",
+    "honey!": "хайраа!",
     "huh": "аа?",
-    "this clearly isn't": "энэ лав биш",
-    "he's been acting weird since the moment he came home": "гэртээ ирснээсээ хойш л сонин аашлаад байгаа",
+    "huh?": "аа?",
+
+    # асуулт/өдөр тутмын асуулт
+    "how are you feeling today?": "Өнөөдөр ямар мэдрэмж төрж байна вэ?",
+    "how are you feeling": "Ямар байна?",
+    "how are you": "Чи ямар байна?",
+    "today?": "өнөөдөр?",
+
+    "the same question every day.": "Өдөр бүр ижил асуулт.",
+    "the same answer each time.": "Болгонд нь ижил хариулт өгдөг.",
+
+    # тодруулга/ажиглалт
+    "this clearly isn't": "Энэ лав биш",
+    "i see.": "Ойлголоо.",
+
+    # ринтаро/болсон явдал
     "what do you think happened to rintaro?": "Ринтарод юу болсон гэж чи бодож байна?",
-    "the face you'd make when watching tv": "ТВ үзэж байхдаа гардаг царай чинь",
-    # нэрс
+    "what do you think happened": "Юу болсон гэж чи бодож байна",
+    "to rintaro?": "Ринтарод?",
     "rintaro": "Ринтаро",
+
+    # гэртээ ирснээс хойш…
+    "he's been acting weird since the moment he came home": "Гэртээ ирснээсээ хойш л сонин аашлаад байгаа",
+    "he's been acting weird": "сонин аашлаад байгаа",
+    "since the moment he came home": "гэртээ ирснээсээ хойш",
+
+    # өвдөлт, эмчилгээ
+    "my legs hurt.": "Миний хөл өвдсөн.",
+    "i can increase the dosage of the meds.": "Эмийн тунг нэмэгдүүлж болно.",
+    "nurse kim?": "Сувилагч Ким?",
+    "yes, doc.": "Тийм ээ, эмч ээ.",
+    "yes, doc": "Тийм ээ, эмч ээ",
+
+    # сэтгэлзүйн өгүүлбэрүүд
+    "i don't care about finding out where things went wrong anymore.": "Юу нь буруугаас болсон бэ гэдгийг мэдэх нь надад одоо хамаагүй.",
+    "i don't care about": "надад хамаагүй",
+    "where things went wrong": "юу нь буруугаас болсон",
+
+    # өрөө рүү дагуулах
+    "i'll guide you to your room~": "Өрөө рүү чинь би дагуулаад явъя~",
+    "i'll guide you to your room": "Өрөө рүү чинь би дагуулаад явъя",
+
+    # цаг хугацааны дүрслэл
+    "when i woke up.": "Би сэрэхэд.",
+    "everything was already over.": "Бүх зүйл аль хэдийн дуусчихсан байсан.",
+
+    # өрөвдсөн харц
+    "the only things had left were gaze full of pity": "Үлдсэн цорын ганц зүйл нь өрөвдсөн харц л байсан.",
+    "the only things": "үлдсэн нь",
+    "had left were": "… л байсан",
+    "gaze": "харц",
+    "full of pity": "өрөвдсөн",
+
+    # телевиз ба нүүрний илэрхийлэл
+    "the face you'd make when watching tv": "ТВ үзэж байхдаа гардаг царай чинь",
+    "tv": "ТВ",
+
+    # санхүү
+    "monthly insurance payments": "сарын даатгалын төлбөрүүд",
+    "the monthly insurance payments": "сарын даатгалын төлбөрүүд",
+    "payments": "төлбөрүүд",
+
+    # холбогч/өгүүлбэр төгсгөл
+    "and ...": "мөн …",
+    "and.": "мөн.",
+    "and": "мөн",
 }
 
-
-# Words to KEEP (don’t translate) in SFX style or proper nouns
+# ---------------------------------------------------------
+# Орчуулахгүй үлдээх (SFX/товчилсон тэмдэглэгээ/дугаар)
+# ---------------------------------------------------------
 KEEP_AS_IS = {
-    "TV", "SFX", "BAM", "WHOOSH", "WHISPER", "CLICK", "BEEP",
+    "SFX", "BAM", "WHOOSH", "WHISPER", "CLICK", "BEEP",
+    "200", "--", "...", "…"
 }
 
-# Optional: SFX replacements (англи SFX → кирилл өнгө)
+# ---------------------------------------------------------
+# SFX-үүдийг кириллчилж эсвэл утгатай нь ойролцоо болгох
+# (хэрэв translate_lingva.py дотор SFX_MAP-ийг эхлээд шалгадаг бол
+# энэ хүснэгтээр шууд орлуулалт хийнэ)
+# ---------------------------------------------------------
 SFX_MAP = {
-    "WHISPER": "шивн-шивн",
+    "TV": "ТВ",
+    "WHISPER": "шивн шивн",
     "BAM": "бам!",
     "WHOOSH": "шууж!",
     "CLICK": "чик",
     "BEEP": "бийп",
-    "CLANCE": "халх",
+    "CLANCE": "огцом",   # OCR алдаа байж магадгүй ч харагдвал ингэж тавина
 }

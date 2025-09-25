@@ -1,17 +1,28 @@
 # translate_lingva.py
 from __future__ import annotations
 from typing import Optional
-import os, time, random, sqlite3, requests, string
+import os, time, random, sqlite3, requests, string, re
 from dotenv import load_dotenv
-from glossary import GLOSSARY_MAP, KEEP_AS_IS  # KEEP_AS_IS-ийг шууд ашиглая
+from glossary import GLOSSARY_MAP, KEEP_AS_IS  # SFX_MAP хэрэггүй
 
-load_dotenv()  # .env-г уншина (ажлын директорт байх ёстой)
+load_dotenv()
 
-from style import (
-    apply_glossary_tokenwise,
-    is_sfx, translate_sfx,
-    reflow_fragments, post_polish_mn
-)
+# --- style импортыг уян хатан болгоё (байхгүй бол fallback-ууд ажиллана)
+try:
+    from style import (
+        apply_glossary_tokenwise as _apply_glossary_tokenwise_ext,
+        is_sfx as _is_sfx_ext,
+        translate_sfx as _translate_sfx_ext,
+        reflow_fragments as _reflow_fragments_ext,
+        post_polish_mn as _post_polish_mn_ext,
+    )
+except Exception:
+    _apply_glossary_tokenwise_ext = None
+    _is_sfx_ext = None
+    _translate_sfx_ext = None
+    _reflow_fragments_ext = None
+    _post_polish_mn_ext = None
+
 from config import SOURCE_LANG, TARGET_LANG
 
 # -------- ENV --------
@@ -19,11 +30,10 @@ SRC_DEFAULT = (os.getenv("SOURCE_LANG") or SOURCE_LANG or "auto").strip()
 TGT_DEFAULT = (os.getenv("TARGET_LANG") or TARGET_LANG or "mn").strip()
 TM_DB = os.getenv("TM_DB", "tm.db")
 
-# API KEY – хэд хэдэн нэршлээс хайна
 API_KEY = (
     os.getenv("LINGVA_API_KEY")
     or os.getenv("LINGVANEX_API_KEY")
-    or os.getenv("LINGVA")  # fallback
+    or os.getenv("LINGVA")
 )
 
 BASE_HOST = (os.getenv("LINGVANEX_API_HOST") or "https://api-b2b.backenster.com").rstrip("/")
@@ -33,10 +43,8 @@ TIMEOUT_S = float(os.getenv("LINGVA_TIMEOUT", "10"))
 MAX_TRIES = int(os.getenv("LINGVA_MAX_ATTEMPTS", "3"))
 BACKOFF   = float(os.getenv("LINGVA_BACKOFF_BASE", "0.5"))
 
-# Санity log: эхлэхдээ нэг удаа хэвлэнэ
 print(f"[lingva:init] host={BASE_HOST}  key_loaded={bool(API_KEY)}")
 
-# Хэрвээ KEY байхгүй бол шууд ойлгомжтой алдаа шиднэ
 if not API_KEY:
     raise RuntimeError(
         "LINGVA_API_KEY (эсвэл LINGVANEX_API_KEY) олдсонгүй. "
@@ -66,7 +74,6 @@ def tm_get(source: str) -> Optional[str]:
 
 def tm_put(source: str, target: str, model: str = "lingva"):
     try:
-        # source == target бол TM бохирдуулж, дараа нь кэш “англиар”-аа эргэн ирэх эрсдэлтэй — хадгалахгүй
         if target == source:
             return
         c = _tm_connect()
@@ -76,13 +83,10 @@ def tm_put(source: str, target: str, model: str = "lingva"):
     except Exception:
         pass
 
-
 # -------- Glossary utils --------
-# Unicode punctuation нэмэлт
 PUNCT_EXTRA = "…“”‘’—–-"
 PUNCT = set(string.punctuation + PUNCT_EXTRA)
 
-# Punctuation-гүй lowercase түлхүүр бүхий glossary
 _NORMALIZED_GLOSSARY = {}
 for _k, _v in GLOSSARY_MAP.items():
     if not _k:
@@ -91,17 +95,12 @@ for _k, _v in GLOSSARY_MAP.items():
     if nk:
         _NORMALIZED_GLOSSARY[nk] = _v
 
-# --- normalization helpers for KEEP/Glossary ---
 def _normalize_token(s: str) -> str:
-    return "".join(ch for ch in s.strip().lower()
+    return "".join(ch for ch in (s or "").strip().lower()
                    if ch not in PUNCT and not ch.isspace())
 
-# All normalized glossary keys (to avoid KEEP clashes)
-_GLOSS_NORM_KEYS = {
-    _normalize_token(k) for k in (GLOSSARY_MAP or {}).keys() if k
-}
+_GLOSS_NORM_KEYS = {_normalize_token(k) for k in (GLOSSARY_MAP or {}).keys() if k}
 
-# Normalized KEEP_AS_IS, but exclude anything that overlaps with the glossary
 _KEEP_NORM = {
     _normalize_token(t)
     for t in (KEEP_AS_IS or set())
@@ -109,15 +108,10 @@ _KEEP_NORM = {
 }
 
 def apply_glossary(text: str) -> Optional[str]:
-    """
-    Текстийн захын punctuation-ыг салгаж, цөм үгийг glossary-д тааруулна.
-    Таарвал анхны punctuation-аа хадгалж буцаана. (давхар punctuation-ыг бас шүүх)
-    """
     if not text or not text.strip():
         return None
 
     s = text
-    # leading/trailing punctuation ялгах
     i, j = 0, len(s) - 1
     while i <= j and s[i] in PUNCT:
         i += 1
@@ -133,10 +127,8 @@ def apply_glossary(text: str) -> Optional[str]:
 
     key = core.lower().strip()
 
-    # 1) Шууд тааруулалт
     mapped = GLOSSARY_MAP.get(key)
     if mapped is None:
-        # 2) Punctuation-гүй тааруулалт
         norm_key = "".join(ch for ch in key if ch not in PUNCT).strip()
         if norm_key:
             mapped = _NORMALIZED_GLOSSARY.get(norm_key)
@@ -144,12 +136,10 @@ def apply_glossary(text: str) -> Optional[str]:
     if mapped is None:
         return None
 
-    # Давхардсан төгсгөлийн punctuation-ыг шахах (ж: "аа?" + "?" -> "аа?")
     if tail and mapped and mapped.endswith(tail[:1]) and mapped[-1] in PUNCT:
         tail = tail[1:]
 
     return f"{lead}{mapped}{tail}"
-
 
 # -------- Low-level call --------
 def _lingva_call(text: str, src: str, tgt: str) -> Optional[str]:
@@ -194,6 +184,64 @@ def lingva_translate_with_retries(text: str, src: str, tgt: str) -> Optional[str
             time.sleep(wait * (0.9 + 0.2*random.random()))
     return last
 
+# -------- Fallbacks for style.* if missing --------
+def _fallback_apply_glossary_tokenwise(text: str) -> str:
+    # энгийн, кейсийн эхний үсгийг хадгална
+    def repl(m):
+        src = m.group(0)
+        key = src.lower()
+        tgt = GLOSSARY_MAP.get(key)
+        if not tgt:
+            return src
+        return (tgt[:1].upper() + tgt[1:]) if src[:1].isupper() else tgt
+    vocab = sorted(GLOSSARY_MAP.keys(), key=len, reverse=True)
+    if not vocab:
+        return text
+    pattern = r'\b(' + '|'.join(re.escape(v) for v in vocab) + r')\b'
+    return re.sub(pattern, repl, text, flags=re.IGNORECASE)
+
+def _fallback_post_polish_mn(text: str) -> str:
+    t = (text or "").replace("...", "…")
+    t = re.sub(r"\s+([,!?…])", r"\1", t)
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    if t and not t[0].isupper():
+        t = t[0].upper() + t[1:]
+    return t
+
+def _fallback_reflow_fragments(lines):
+    # OCR мөрүүдийг нэгтгэж нэгэн текст болгоно
+    text = " ".join([l.strip() for l in lines if l.strip()])
+    if not text:
+        return lines
+    import re
+    # Өгүүлбэрээр таслана
+    sentences = re.split(r'(?<=[.!?。！？])\s+', text)
+    return [s.strip() for s in sentences if s.strip()]
+
+
+def apply_glossary_tokenwise(text: str) -> str:
+    return _apply_glossary_tokenwise_ext(text) if _apply_glossary_tokenwise_ext else _fallback_apply_glossary_tokenwise(text)
+
+def post_polish_mn(text: str) -> str:
+    return _post_polish_mn_ext(text) if _post_polish_mn_ext else _fallback_post_polish_mn(text)
+
+def reflow_fragments(lines):
+    return _reflow_fragments_ext(lines) if _reflow_fragments_ext else _fallback_reflow_fragments(lines)
+
+def is_sfx(line: str) -> bool:
+    return _is_sfx_ext(line) if _is_sfx_ext else False
+
+def translate_sfx(line: str) -> str:
+    return _translate_sfx_ext(line) if _translate_sfx_ext else line
+
+# -------- Helpers --------
+_LATIN_RE = re.compile(r'[A-Za-z]')
+
+def _has_latin(s: str) -> bool:
+    return bool(_LATIN_RE.search(s or ""))
+
+def _same_ignorecase(a: str, b: str) -> bool:
+    return (a or "").strip().lower() == (b or "").strip().lower()
 
 # -------- Public API --------
 def translate_lines_impl(lines,
@@ -204,63 +252,75 @@ def translate_lines_impl(lines,
                          local_only=False, force_online=False):
     if not lines:
         return []
+
     raw = reflow_fragments(lines) if reflow else lines
-    results = [None] * len(raw)
+    results = []
 
-    for i, s in enumerate(raw):
+    for s in raw:
         if not s:
-            results[i] = ""
+            results.append("")
             continue
 
-        # 0) SFX
-        if is_sfx(s):
-            val = translate_sfx(s)
-            results[i] = post_polish_mn(val) if do_polish else val
-            tm_put(s, results[i], "sfx")
-            continue
+        norm = _normalize_token(s)
 
-        # 1) SFX handled above
-
-        # 2) Glossary (punct-aware) FIRST
+        # 1) Glossary (punct-aware) – ЭХЭНД
         g = apply_glossary(s)
         if g is not None:
             out = post_polish_mn(g) if do_polish else g
-            results[i] = out
+            results.append(out)
             tm_put(s, out, "glossary")
             continue
 
-        # 3) KEEP_AS_IS — only keep those that don't collide with glossary
-        if _normalize_token(s) in _KEEP_NORM:
-            results[i] = s
+        # 2) KEEP_AS_IS – глоссариас давуу биш (давхцал шүүгдсэн)
+        if norm in _KEEP_NORM:
+            results.append(s)
             tm_put(s, s, "keep")
             continue
 
-        # 3) TM cache (source-той адил биш үед л ашиглана)
-        cached = None if force_online else tm_get(s)
-        if cached is not None and cached != s:
-            results[i] = cached
+        # 3) SFX – зөвхөн style.is_sfx/translate_sfx
+        if is_sfx(s):
+            val = translate_sfx(s)
+            out = post_polish_mn(val) if do_polish else val
+            results.append(out)
+            tm_put(s, out, "sfx")
             continue
 
-        # 4) Онлайн / локал fallback
+        # 4) TM cache
+        if not force_online:
+            cached = tm_get(s)
+            if cached is not None and cached != s:
+                results.append(cached)
+                continue
+
+        # 5) Local-only fallback
         if local_only:
             val = apply_glossary_tokenwise(s)
-            results[i] = post_polish_mn(val) if do_polish else val
+            out = post_polish_mn(val) if do_polish else val
+            results.append(out)
             continue
 
+        # 6) Онлайн орчуулга
         tr = lingva_translate_with_retries(s, source_lang, target_lang)
-        if tr:
+
+        if (not tr or _same_ignorecase(tr, s)) and _has_latin(s):
+            tr2 = lingva_translate_with_retries(s, "en", target_lang)
+            if tr2 and not _same_ignorecase(tr2, s):
+                print(f"[lingva:fallback-en] {s!r} -> {tr2!r}")
+                tr = tr2
+
+        if tr and not _same_ignorecase(tr, s):
             final = apply_glossary_tokenwise(tr)
             final = post_polish_mn(final) if do_polish else final
-            results[i] = final
+            results.append(final)
             tm_put(s, final, "lingva")
         else:
+            # эцсийн fallback: токеноор глоссари
             val = apply_glossary_tokenwise(s)
             final = post_polish_mn(val) if do_polish else val
-            results[i] = final
+            results.append(final)
             if final != s:
                 tm_put(s, final, "local-fallback")
 
-    # >>> ХАМГИЙН ЧУХАЛ: үргэлж жагсаалт буцаа <<<
     return results
 
 def translate_lines(lines, source_lang: str = SRC_DEFAULT, target_lang: str = TGT_DEFAULT,
