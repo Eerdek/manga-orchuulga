@@ -14,7 +14,7 @@ from translate_lingva import translate_lines, translate_lines_impl
 from config import DEFAULT_FONT_PATH
 
 app = Flask(__name__, static_url_path="/static")
-app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256MB хүртэл upload
+app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256MB
 IN_DIR  = pathlib.Path("input");  IN_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR = pathlib.Path("output"); OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -22,7 +22,7 @@ OUT_DIR = pathlib.Path("output"); OUT_DIR.mkdir(parents=True, exist_ok=True)
 WATERMARK_PATH = os.environ.get("WATERMARK_PATH", r"C:\FEDoUP\watermark.png")
 WM_RATIO   = float(os.environ.get("WM_RATIO", "0.22"))
 WM_MIN_W   = int(os.environ.get("WM_MIN_W", "100"))
-WM_OFFSET  = os.environ.get("WM_OFFSET", "+12+12")  # "+X+Y" bottom-right
+WM_OFFSET  = os.environ.get("WM_OFFSET", "+12+12")
 WM_OPACITY = float(os.environ.get("WM_OPACITY", "1.0"))
 
 def _parse_offset(s: str) -> Tuple[int,int]:
@@ -81,6 +81,7 @@ def load_layout(p: str) -> Dict[str, Any]:
     j["translations"] = j.get("translations", [""] * len(j["boxes"]))
     j["styles"] = j.get("styles", [{"fontSize": None, "color": None} for _ in j["boxes"]])
     j["erasers"] = j.get("erasers", [])
+    j["restores"] = j.get("restores", [])  # <-- restore masks
     return j
 
 def save_layout(p: str, d: Dict[str, Any]) -> None:
@@ -90,19 +91,21 @@ def save_layout(p: str, d: Dict[str, Any]) -> None:
         "translations": d.get("translations", []),
         "styles": d.get("styles", []),
         "erasers": d.get("erasers", []),
+        "restores": d.get("restores", []),
     }
     with open(p, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
 
 def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
-    src, clean, _, _ = _paths(layout_path, data["source_image"])
+    src_path, clean, _, _ = _paths(layout_path, data["source_image"])
     if clean.exists() and not force:
         return str(clean)
 
-    base = Image.open(src).convert("RGBA")
+    original = Image.open(src_path).convert("RGBA")
+    base = original.copy()
 
-    # Auto erase OCR boxes unless manual erasers exist
-    auto_erase = os.getenv("AUTO_ERASE", "1") not in ("0", "false", "False", "no", "No")
+    # ---- ERASE (same as before) ----
+    auto_erase = os.getenv("AUTO_ERASE", "1") not in ("0","false","False","no","No")
     erasers = list(data.get("erasers", []))
 
     if auto_erase and not erasers:
@@ -111,12 +114,8 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
                 erase_text_area(
                     base,
                     box=tuple(map(int, b.bbox)),
-                    expand=18,
-                    feather=3,
-                    corner=8,
-                    aggressive=3,
-                    mask_mode="text",
-                    pattern=None
+                    expand=18, feather=3, corner=8, aggressive=3,
+                    mask_mode="text", pattern=None
                 )
             except Exception:
                 pass
@@ -146,6 +145,16 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
                     out = inpaint_with_mask(base, mu8, (int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
                     if out is not None:
                         base.paste(out)
+
+    # ---- RESTORE (overlay original by mask) ----
+    for r in data.get("restores", []):
+        if r.get("type") != "mask": continue
+        mf = r.get("mask_file")
+        if not mf or not pathlib.Path(mf).exists(): continue
+        m = Image.open(mf).convert("L")
+        if m.size != original.size:
+            m = m.resize(original.size, Image.NEAREST)
+        base = Image.composite(original, base, m)
 
     base.save(clean, "PNG")
     return str(clean)
@@ -207,7 +216,7 @@ def api_upload():
         saved.append(path.resolve().as_posix())
     return {"ok":True, "files": saved}
 
-# ---------- auto translate ----------
+# ---------- auto translate (batch) ----------
 @app.post("/api/auto_translate")
 def api_auto_translate():
     j = request.get_json(force=True, silent=True) or {}
@@ -245,6 +254,7 @@ def api_auto_translate():
                 "translations": trans,
                 "styles": [{"fontSize": None, "color": None} for _ in boxes],
                 "erasers": [],
+                "restores": [],
             }
             with open(out_json, "w", encoding="utf-8") as f:
                 json.dump(layout, f, ensure_ascii=False, indent=2)
@@ -284,11 +294,12 @@ def api_open():
         "translations": d.get("translations", []),
         "styles": d.get("styles", []),
         "erasers": d.get("erasers", []),
+        "restores": d.get("restores", []),
         "clean_image": str(clean),
         "edited_image": str(edited),
     }
 
-# ---------- brush(mask) erase ----------
+# ---------- erase / restore masks + counters (undo-д хэрэгтэй) ----------
 @app.post("/api/set_eraser_count")
 def api_set_eraser_count():
     j = request.get_json(force=True, silent=True) or {}
@@ -303,6 +314,21 @@ def api_set_eraser_count():
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
     return {"ok": True, "clean_image": clean_path, "eraser_count": len(d["erasers"])}
+
+@app.post("/api/set_restore_count")
+def api_set_restore_count():
+    j = request.get_json(force=True, silent=True) or {}
+    lp = (j.get("layout_path") or "").strip()
+    count = int(j.get("count", -1))
+    if not lp or not pathlib.Path(lp).exists():
+        return {"error":"layout not found"}, 400
+    d = load_layout(lp)
+    if count < 0 or count > len(d.get("restores", [])):
+        return {"error":"bad count"}, 400
+    d["restores"] = d.get("restores", [])[:count]
+    save_layout(lp, d)
+    clean_path = _ensure_clean(lp, d, force=True)
+    return {"ok": True, "clean_image": clean_path, "restore_count": len(d["restores"])}
 
 @app.post("/api/erase_mask")
 def api_erase_mask():
@@ -328,6 +354,31 @@ def api_erase_mask():
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
     return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "eraser_count": len(d["erasers"])}
+
+@app.post("/api/restore_mask")
+def api_restore_mask():
+    j = request.get_json(force=True, silent=True) or {}
+    lp = (j.get("layout_path") or "").strip()
+    data_url = j.get("mask_data_url") or ""
+    if not lp or not pathlib.Path(lp).exists():
+        return {"error":"layout not found"}, 400
+    if not data_url.startswith("data:image/png;base64,"):
+        return {"error":"invalid mask"}, 400
+
+    d = load_layout(lp)
+    src, _, _, mask_dir = _paths(lp, d["source_image"])
+    b64 = data_url.split(",",1)[1]
+    mask_im = Image.open(io.BytesIO(base64.b64decode(b64))).convert("L")
+    W0, H0 = Image.open(src).size
+    if mask_im.size != (W0, H0):
+        mask_im = mask_im.resize((W0, H0), Image.NEAREST)
+    idx = sum(1 for e in d.get("restores",[]) if e.get("type")=="mask") + 1
+    mpath = mask_dir / f"restore_{idx:03d}.png"
+    mask_im.save(mpath, "PNG")
+    d.setdefault("restores", []).append({"type":"mask", "mask_file": str(mpath)})
+    save_layout(lp, d)
+    clean_path = _ensure_clean(lp, d, force=True)
+    return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "restore_count": len(d["restores"])}
 
 # ---------- rebuild clean ----------
 @app.post("/api/rebuild_clean")
@@ -455,6 +506,7 @@ def api_download_zip():
                         "translations": d.get("translations", []),
                         "styles": d.get("styles", []),
                         "erasers": d.get("erasers", []),
+                        "restores": d.get("restores", []),
                     }, ensure_ascii=False, indent=2))
                     cp = OUT_DIR / f"{stem}.clean.png"
                     if include in ("both","clean") and cp.exists(): z.write(cp, f"images/{stem}.clean.png")
@@ -494,7 +546,7 @@ HOME_HTML = r"""<!doctype html>
         <div id="dropText">Drag & Drop , Paste or Click to upload</div>
       </label>
       <div class="row">
-        <label>Target mode</label>
+        <label>Mode</label>
         <select id="manga"><option value="1" selected>Manga mode</option><option value="0">Normal</option></select>
         <button class="btn" id="go">Translate</button>
       </div>
@@ -553,7 +605,7 @@ async function start(){
       return;
     }
     const q = encodeURIComponent(JSON.stringify(okLayouts));
-    location.href = '/editor?layouts=' + q; // ⬅ олон layout-ыг editor руу
+    location.href = '/editor?layouts=' + q; // batch → editor
   }catch(ex){
     toast('Unexpected error: '+ex, true);
   }
@@ -575,7 +627,6 @@ EDITOR_HTML = r"""<!doctype html>
 <style>
   :root{--bg:#0f1115;--panel:#ffffff;--border:#e5e7eb;--muted:#6b7280}
   *{box-sizing:border-box}
-
   body{margin:0;height:100vh;display:grid;grid-template-columns:1fr 420px;background:var(--bg);color:#111;font-family:ui-sans-serif,system-ui,Segoe UI,Arial}
   #left{position:relative;overflow:auto}
   #right{background:var(--panel);padding:14px;overflow:auto;border-left:1px solid #e5e7eb}
@@ -584,7 +635,6 @@ EDITOR_HTML = r"""<!doctype html>
   #img{display:block;max-width:none}
   #brush{position:absolute;left:0;top:0;pointer-events:none}
   #overlay{position:absolute;left:0;top:0;pointer-events:none}
-
   #ui{position:fixed;left:16px;top:16px;display:flex;gap:8px;z-index:5;align-items:center}
   .btn{padding:8px 10px;border-radius:10px;border:1px solid #d1d5db;background:#0f172a;color:#fff;cursor:pointer}
   .chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#f8fafc;color:#111;cursor:pointer}
@@ -592,40 +642,12 @@ EDITOR_HTML = r"""<!doctype html>
   input[type=color],select{border:1px solid var(--border);border-radius:8px;padding:6px}
   .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
   .ok{color:#0a7a2f}.err{color:#b00020;white-space:pre-wrap}
-
-  .box{
-    position:absolute;
-    border:2px solid rgba(14,165,233,0);
-    border-radius:8px;
-    cursor:move;
-    user-select:none;
-    background:transparent;
-    pointer-events:auto;
-    transition:border-color .06s ease;
-  }
+  .box{position:absolute;border:2px solid rgba(14,165,233,0);border-radius:8px;cursor:move;user-select:none;background:transparent;pointer-events:auto;transition:border-color .06s ease;}
   .box:hover{ border-color: rgba(14,165,233,.35); }
-  .box.active{
-    border-color: rgba(14,165,233,1);
-    outline: 2px dashed #0ea5e9;
-  }
-  .box .txt{
-    position:absolute;
-    left:6px; top:6px; right:6px; bottom:6px;
-    padding:2px 4px;
-    overflow:hidden;
-    white-space:pre-wrap;
-    line-height:1.15;
-    color:#111;
-    cursor:text;
-  }
-  .box .handle{
-    position:absolute; right:-6px; bottom:-6px;
-    width:12px; height:12px; border-radius:3px;
-    background:#0f172a; cursor:nwse-resize;
-    display:none;
-  }
+  .box.active{ border-color: rgba(14,165,233,1); outline: 2px dashed #0ea5e9; }
+  .box .txt{position:absolute;left:6px; top:6px; right:6px; bottom:6px;padding:2px 4px;overflow:hidden;white-space:pre-wrap;line-height:1.15;color:#111;cursor:text;}
+  .box .handle{position:absolute; right:-6px; bottom:-6px;width:12px;height:12px;border-radius:3px;background:#0f172a; cursor:nwse-resize; display:none;}
   .box.active .handle{ display:block; }
-
   .item{border:1px solid #e5e7eb;border-radius:12px;padding:10px;margin:8px 0}
   .item.active{outline:2px solid #0ea5e9}
   .item .o{font-size:12px;color:#6b7280;white-space:pre-wrap}
@@ -642,8 +664,6 @@ EDITOR_HTML = r"""<!doctype html>
       <button class="btn" onclick="redo()" title="Ctrl+Y">Redo</button>
       <span class="chip" id="vEd" onclick="setView('edited')">Edited (live)</span>
       <span class="chip" id="vOr" onclick="setView('original')">Original</span>
-
-      <!-- Batch navigation -->
       <button class="btn" onclick="prevItem()" title="Previous">◀</button>
       <select id="batchSelect" onchange="jumpTo(this.value)" style="max-width:260px"></select>
       <button class="btn" onclick="nextItem()" title="Next">▶</button>
@@ -679,19 +699,20 @@ EDITOR_HTML = r"""<!doctype html>
     <div id="list"></div>
     <div id="stat"></div>
 
-    <div class="hdr">AI Inpaint</div>
+    <div class="hdr">AI Inpaint / Restore</div>
     <div class="row" id="brushRow">
       <span style="min-width:90px">Brush</span>
       <input type="range" id="bsize" min="8" max="200" value="90" style="flex:1">
-      <button class="btn" onclick="setMode('paint')">Paint</button>
-      <button class="btn" onclick="applyMask()">✓ Apply</button>
+      <button class="btn" onclick="setMode('paint')">Erase</button>
+      <button class="btn" onclick="setMode('restore')">Restore</button>
+      <button class="btn" onclick="applyMask()">✓ Apply Erase</button>
+      <button class="btn" onclick="applyRestore()">✓ Apply Restore</button>
       <button class="btn" onclick="clearMask()">× Clear</button>
     </div>
   </div>
 
 <script>
-let batch = []; // бүх layout зам
-let idx = 0;    // идэвхтэй индекс
+let batch = []; let idx = 0;
 
 let layout=null, lp=null, clean='', edited='', view='edited', mode='paint';
 let img=document.getElementById('img'), brush=document.getElementById('brush'), bctx=brush.getContext('2d');
@@ -699,7 +720,7 @@ let overlay=document.getElementById('overlay');
 let scale=1, boxes=[], active=-1, painting=false;
 let history=[], future=[];
 let dragging=false, resizing=false, dx=0, dy=0, changed=false;
-let eraserCount=0;
+let eraserCount=0, restoreCount=0;
 
 document.addEventListener('DOMContentLoaded', ()=>{
   const url = new URL(location.href);
@@ -707,17 +728,10 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const single = url.searchParams.get('layout');
 
   if (ls) {
-    try {
-      batch = JSON.parse(ls);
-      idx = 0;
-      fillBatchSelect();
-      openLayoutByIndex(idx);
-    } catch(e) { console.error(e); }
+    try { batch = JSON.parse(ls); idx = 0; fillBatchSelect(); openLayoutByIndex(idx); } catch(e) { console.error(e); }
   } else if (single) {
-    document.getElementById('layout').value = single;
-    openLayout();
+    document.getElementById('layout').value = single; openLayout();
   }
-
   setView('edited');
 
   document.getElementById('left').addEventListener('wheel',e=>{ if(e.ctrlKey){ e.preventDefault(); stepZoom(e.deltaY<0?0.1:-0.1);}},{passive:false});
@@ -767,9 +781,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
     }
   });
 
-  overlay.addEventListener('mousedown',e=>{
-    if(e.target===overlay){ setActiveBox(-1); }
-  });
+  overlay.addEventListener('mousedown',e=>{ if(e.target===overlay){ setActiveBox(-1); } });
+  setMode('paint'); // default color
 });
 
 function fillBatchSelect(){
@@ -778,8 +791,7 @@ function fillBatchSelect(){
   batch.forEach((p,i)=>{
     const opt = document.createElement('option');
     const name = (p.split(/[\\/]/).pop() || ('Page '+(i+1)));
-    opt.value = i;
-    opt.textContent = `${i+1}/${batch.length} — ${name}`;
+    opt.value = i; opt.textContent = `${i+1}/${batch.length} — ${name}`;
     sel.appendChild(opt);
   });
   sel.value = idx.toString();
@@ -792,7 +804,6 @@ async function openLayoutByIndex(i){
   const sel = document.getElementById('batchSelect');
   if (sel) sel.value = idx.toString();
 }
-
 function prevItem(){ if (idx>0) openLayoutByIndex(idx-1); }
 function nextItem(){ if (idx<batch.length-1) openLayoutByIndex(idx+1); }
 function jumpTo(v){ const i = parseInt(v,10); if(!isNaN(i)) openLayoutByIndex(i); }
@@ -801,16 +812,25 @@ function setView(v){
   view=v;
   document.getElementById('vEd').classList.toggle('active',v==='edited');
   document.getElementById('vOr').classList.toggle('active',v==='original');
-
   const showOverlay = (v==='edited');
   overlay.style.display = showOverlay ? 'block' : 'none';
   brush.style.display   = showOverlay ? 'block' : 'none';
   brush.style.pointerEvents = showOverlay ? 'auto' : 'none';
-
   refreshImage(true);
 }
 
-function setMode(m){ mode=m; brush.style.pointerEvents = (mode==='paint' && view==='edited')?'auto':'none'; }
+function setMode(m){
+  mode=m;
+  const on = (view==='edited');
+  brush.style.pointerEvents = on ? 'auto' : 'none';
+  // color by mode
+  if (mode==='paint') {
+    bctx.strokeStyle='rgba(0,128,255,0.45)'; // erase = blue
+  } else if (mode==='restore') {
+    bctx.strokeStyle='rgba(0,200,0,0.45)';   // restore = green
+  }
+}
+
 function stepZoom(d){ scale=Math.min(6,Math.max(0.1,scale+d)); document.getElementById('stage').style.transform='scale('+scale+')'; }
 function actual(){ scale=1; document.getElementById('stage').style.transform='scale(1)'; }
 function fit(){
@@ -826,6 +846,7 @@ async function openLayout(){
   if(!r.ok){ stat(j.error,true); return; }
   layout=j; lp=path; clean=j.clean_image; edited=j.edited_image;
   eraserCount = (layout.erasers || []).length;
+  restoreCount = (layout.restores || []).length;
   await refreshImage(true);
   buildOverlays();
   buildList();
@@ -844,12 +865,10 @@ async function refreshImage(reset=false){
     tmp.src=url+'&probe=1&t='+(Date.now());
   });
 }
-
 function sizeBrush(){
   brush.width=img.naturalWidth; brush.height=img.naturalHeight;
   brush.style.width=img.naturalWidth+'px'; brush.style.height=img.naturalHeight+'px';
-  overlay.style.width=img.naturalWidth+'px';
-  overlay.style.height=img.naturalHeight+'px';
+  overlay.style.width=img.naturalWidth+'px'; overlay.style.height=img.naturalHeight+'px';
   clearMask();
 }
 
@@ -862,41 +881,28 @@ function autoFit(i){
   const box = boxes[i]; if(!box) return;
   const txt = box.querySelector('.txt');
   const pad = 16;
-  box.style.width  = 'auto';
-  box.style.height = 'auto';
+  box.style.width  = 'auto'; box.style.height = 'auto';
   const w = Math.ceil(txt.scrollWidth  + pad);
   const h = Math.ceil(txt.scrollHeight + pad);
-  box.style.width  = w + 'px';
-  box.style.height = h + 'px';
+  box.style.width  = w + 'px'; box.style.height = h + 'px';
   ensureMinSize(box);
 }
-function autoFitAll(){
-  (boxes||[]).forEach((_,i)=>autoFit(i));
-  pushState(); stat('Auto-fit all done');
-}
+function autoFitAll(){ (boxes||[]).forEach((_,i)=>autoFit(i)); pushState(); stat('Auto-fit all done'); }
 
 function buildOverlays(){
   boxes.forEach(x=>x.remove()); boxes=[];
   overlay.innerHTML='';
-
   (layout.boxes||[]).forEach((b,i)=>{
     const [x,y,w,h]=b.bbox.map(v=>parseInt(v));
     const box=document.createElement('div'); box.className='box';
     box.style.left=x+'px'; box.style.top=y+'px';
     box.style.width=w+'px'; box.style.height=h+'px';
-
-    const txt=document.createElement('div'); txt.className='txt';
-    txt.contentEditable='true';
+    const txt=document.createElement('div'); txt.className='txt'; txt.contentEditable='true';
     txt.textContent=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-
     const style=(layout.styles&&layout.styles[i])?layout.styles[i]:{};
-    txt.style.fontSize=(style.fontSize||24)+'px';
-    txt.style.color=(style.color||'#111111');
-
+    txt.style.fontSize=(style.fontSize||24)+'px'; txt.style.color=(style.color||'#111111');
     const hdl=document.createElement('div'); hdl.className='handle';
-    box.appendChild(txt); box.appendChild(hdl);
-    overlay.appendChild(box);
-
+    box.appendChild(txt); box.appendChild(hdl); overlay.appendChild(box);
     ensureMinSize(box);
 
     box.addEventListener('mousedown',e=>{
@@ -925,19 +931,11 @@ function buildOverlays(){
         }
       }
     });
-    window.addEventListener('mouseup',()=>{
-      if(dragging||resizing){
-        if(changed) pushState();
-      }
-      dragging=false; resizing=false; changed=false;
-    });
-
+    window.addEventListener('mouseup',()=>{ if(dragging||resizing){ if(changed) pushState(); } dragging=false; resizing=false; changed=false; });
     box.addEventListener('dblclick', ()=>{ if(view==='edited'){ autoFit(i); pushState(); }});
     txt.addEventListener('input', ()=> autoFit(i));
-
     boxes.push(box);
   });
-
   setActiveBox(-1);
 }
 function setActiveBox(i){
@@ -945,7 +943,6 @@ function setActiveBox(i){
   boxes.forEach((b,idx)=>b.classList.toggle('active', idx===i));
   [...document.querySelectorAll('.item')].forEach((el,idx)=>el.classList.toggle('active',idx===i));
 }
-
 function collectBoxes(){
   return boxes.map((b,i)=>({
     index:i,
@@ -957,17 +954,13 @@ function collectBoxes(){
     ]
   }));
 }
-
 function buildList(){
   const host=document.getElementById('list'); host.innerHTML='';
   (layout.boxes||[]).forEach((b,i)=>{
     const it=document.createElement('div'); it.className='item'; it.id='it'+i;
     const o=document.createElement('div'); o.className='o'; o.textContent=b.text||'';
     const ta=document.createElement('textarea'); ta.value=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    ta.addEventListener('input',()=>{
-      const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value;
-      autoFit(i);
-    });
+    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; autoFit(i); });
     ta.addEventListener('change',()=>{ pushState(); });
     it.addEventListener('click',()=>{ setActiveBox(i); boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'}); });
     host.appendChild(it); it.appendChild(o); it.appendChild(ta);
@@ -981,6 +974,7 @@ function snapshot(){
     bx: collectBoxes(),
     st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : [],
     ec: eraserCount,
+    rc: restoreCount,
     br: brushPNG
   };
 }
@@ -989,12 +983,14 @@ async function applySnapshot(s){
   s.tr.forEach((v,i)=>{ if(ta[i]) ta[i].value=v; const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=v; });
   s.bx.forEach((b,i)=>{ const box=boxes[i]; if(!box) return; const [x,y,w,h]=b.bbox; box.style.left=x+'px'; box.style.top=y+'px'; box.style.width=w+'px'; box.style.height=h+'px'; });
   layout.styles = s.st;
-
   await new Promise(res=>{ const im=new Image(); im.onload=()=>{ clearMask(); bctx.drawImage(im,0,0); res(); }; im.src=s.br; });
 
   if(lp){
-    const r=await fetch('/api/set_eraser_count',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,count:s.ec})});
-    if(r.ok){ const j=await r.json(); eraserCount=j.eraser_count ?? s.ec; clean=j.clean_image || clean; await refreshImage(false); }
+    const r1=await fetch('/api/set_eraser_count',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,count:s.ec})});
+    if(r1.ok){ const j=await r1.json(); eraserCount=j.eraser_count ?? s.ec; clean=j.clean_image || clean; }
+    const r2=await fetch('/api/set_restore_count',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,count:s.rc})});
+    if(r2.ok){ const j2=await r2.json(); restoreCount=j2.restore_count ?? s.rc; clean=j2.clean_image || clean; }
+    await refreshImage(false);
   }
 }
 function pushState(){ history.push(snapshot()); if(history.length>100) history.shift(); future.length=0; }
@@ -1021,12 +1017,8 @@ async function applyStyle(){
 }
 async function renderAndDownload(){
   if(!lp) return;
-
-  // Одоогийн хуудсыг render хийж хадгална
   await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
   await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, translations:[...document.querySelectorAll('#list textarea')].map(t=>t.value)})});
-
-  // Batch байвал бүгдийг татна
   const items=encodeURIComponent(JSON.stringify(batch.length ? batch : [lp]));
   location.href='/api/download_zip?include=edited&items='+items;
   stat('Rendered & downloading ZIP…');
@@ -1040,21 +1032,21 @@ async function rebuild(){
 function stat(m,err=false){ document.getElementById('stat').innerHTML=err?('<span class="err">'+m+'</span>'):('<span class="ok">'+m+'</span>'); }
 
 function startPaint(e){
-  if(mode!=='paint' || view!=='edited') return;
+  if(view!=='edited') return;
   painting=true; brush.style.pointerEvents='auto';
   bctx.globalCompositeOperation='source-over';
-  bctx.strokeStyle='rgba(0,128,255,0.45)';
   bctx.lineWidth=+document.getElementById('bsize').value;
   bctx.lineCap='round'; bctx.lineJoin='round';
   const p=pt(e); bctx.beginPath(); bctx.moveTo(p.x,p.y);
 }
 function movePaint(e){
-  if(!painting || mode!=='paint' || view!=='edited') return;
+  if(!painting || view!=='edited') return;
   const p=pt(e); bctx.lineTo(p.x,p.y); bctx.stroke();
 }
 function endPaint(){ painting=false; }
 function pt(e){ const r=brush.getBoundingClientRect(); return {x:(e.clientX-r.left)/scale, y:(e.clientY-r.top)/scale}; }
 function clearMask(){ bctx.clearRect(0,0,brush.width,brush.height); }
+
 async function applyMask(){
   if(!lp) return;
   const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
@@ -1066,6 +1058,19 @@ async function applyMask(){
   const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
   eraserCount = j.eraser_count ?? eraserCount;
   clean=j.clean_image; await refreshImage(false); stat('Inpaint OK');
+  pushState();
+}
+async function applyRestore(){
+  if(!lp) return;
+  const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
+  const t=tmp.getContext('2d'); t.fillStyle='black'; t.fillRect(0,0,tmp.width,tmp.height);
+  t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
+  const dataURL = tmp.toDataURL('image/png');
+  clearMask();
+  const r=await fetch('/api/restore_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,mask_data_url:dataURL})});
+  const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
+  restoreCount = j.restore_count ?? restoreCount;
+  clean=j.clean_image; await refreshImage(false); stat('Restore OK');
   pushState();
 }
 </script>

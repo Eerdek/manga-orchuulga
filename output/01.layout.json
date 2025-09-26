@@ -356,5 +356,15 @@
       "color": null
     }
   ],
-  "erasers": []
+  "erasers": [],
+  "restores": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\restore_001.png"
+    },
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\restore_002.png"
+    }
+  ]
 }
