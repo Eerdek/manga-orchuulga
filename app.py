@@ -14,6 +14,7 @@ from translate_lingva import translate_lines, translate_lines_impl
 from config import DEFAULT_FONT_PATH
 
 app = Flask(__name__, static_url_path="/static")
+app.config['MAX_CONTENT_LENGTH'] = 256 * 1024 * 1024  # 256MB хүртэл upload
 IN_DIR  = pathlib.Path("input");  IN_DIR.mkdir(parents=True, exist_ok=True)
 OUT_DIR = pathlib.Path("output"); OUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -107,7 +108,6 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
     if auto_erase and not erasers:
         for b in data.get("boxes", []):
             try:
-                # Stronger cleaning: text-aware mask + aggressive=3
                 erase_text_area(
                     base,
                     box=tuple(map(int, b.bbox)),
@@ -277,7 +277,7 @@ def api_open():
     d = load_layout(lp)
     while len(d["styles"]) < len(d["boxes"]):
         d["styles"].append({"fontSize": None, "color": None})
-    _, clean, edited, _ = _paths(lp, d["source_image"])    
+    _, clean, edited, _ = _paths(lp, d["source_image"])
     return {
         "source_image": d["source_image"],
         "boxes": [{"text": b.text, "bbox": list(b.bbox)} for b in d["boxes"]],
@@ -285,10 +285,25 @@ def api_open():
         "styles": d.get("styles", []),
         "erasers": d.get("erasers", []),
         "clean_image": str(clean),
-        "edited_image": str(edited),                        
+        "edited_image": str(edited),
     }
 
 # ---------- brush(mask) erase ----------
+@app.post("/api/set_eraser_count")
+def api_set_eraser_count():
+    j = request.get_json(force=True, silent=True) or {}
+    lp = (j.get("layout_path") or "").strip()
+    count = int(j.get("count", -1))
+    if not lp or not pathlib.Path(lp).exists():
+        return {"error":"layout not found"}, 400
+    d = load_layout(lp)
+    if count < 0 or count > len(d.get("erasers", [])):
+        return {"error":"bad count"}, 400
+    d["erasers"] = d.get("erasers", [])[:count]
+    save_layout(lp, d)
+    clean_path = _ensure_clean(lp, d, force=True)
+    return {"ok": True, "clean_image": clean_path, "eraser_count": len(d["erasers"])}
+
 @app.post("/api/erase_mask")
 def api_erase_mask():
     j = request.get_json(force=True, silent=True) or {}
@@ -312,7 +327,7 @@ def api_erase_mask():
     d["erasers"].append({"type":"mask", "mask_file": str(mpath)})
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
-    return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath)}
+    return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "eraser_count": len(d["erasers"])}
 
 # ---------- rebuild clean ----------
 @app.post("/api/rebuild_clean")
@@ -479,7 +494,7 @@ HOME_HTML = r"""<!doctype html>
         <div id="dropText">Drag & Drop , Paste or Click to upload</div>
       </label>
       <div class="row">
-        <label>Target language</label>
+        <label>Target mode</label>
         <select id="manga"><option value="1" selected>Manga mode</option><option value="0">Normal</option></select>
         <button class="btn" id="go">Translate</button>
       </div>
@@ -501,7 +516,7 @@ filesEl.addEventListener('change', ()=>{
 document.addEventListener('dragover', e=>e.preventDefault());
 document.addEventListener('drop', e=>{
   e.preventDefault();
-  const f=[...e.dataTransfer.files].filter(x=>/\.(png|jpe?g|webp|bmp)$/i.test(x.name));
+  const f=[...e.dataTransfer.files].filter(x=>/\\.(png|jpe?g|webp|bmp)$/i.test(x.name));
   if(f.length){
     picked=f;
     const dt=new DataTransfer();
@@ -531,13 +546,14 @@ async function start(){
     const j2=await r2.json();
     if(!r2.ok || !j2.results){ toast(j2.error||'Translate failed',true); return; }
 
-    const okRes = j2.results.find(x => x && x.layout);
-    if(!okRes){
+    const okLayouts = j2.results.filter(x => x && x.layout).map(x => x.layout);
+    if(!okLayouts.length){
       const firstErr = j2.results.find(x => x && x.error);
       toast(firstErr ? ('Failed: '+firstErr.error) : 'No layouts produced', true);
       return;
     }
-    location.href = '/editor?layout=' + encodeURIComponent(okRes.layout);
+    const q = encodeURIComponent(JSON.stringify(okLayouts));
+    location.href = '/editor?layouts=' + q; // ⬅ олон layout-ыг editor руу
   }catch(ex){
     toast('Unexpected error: '+ex, true);
   }
@@ -562,14 +578,14 @@ EDITOR_HTML = r"""<!doctype html>
 
   body{margin:0;height:100vh;display:grid;grid-template-columns:1fr 420px;background:var(--bg);color:#111;font-family:ui-sans-serif,system-ui,Segoe UI,Arial}
   #left{position:relative;overflow:auto}
-  #right{background:var(--panel);padding:14px;overflow:auto;border-left:1px solid var(--border)}
+  #right{background:var(--panel);padding:14px;overflow:auto;border-left:1px solid #e5e7eb}
   .hdr{position:sticky;top:0;background:#fff;padding:10px 0;border-bottom:1px solid #e5e7eb;font-weight:700;font-size:18px;z-index:3}
   #stage{position:relative;display:inline-block;margin:14px}
   #img{display:block;max-width:none}
   #brush{position:absolute;left:0;top:0;pointer-events:none}
-  /* NEW: overlay давхарга — зөвхөн edited дээр харагдана */
-  #overlay{position:absolute;left:0;top:0}
-  #ui{position:fixed;left:16px;top:16px;display:flex;gap:8px;z-index:5}
+  #overlay{position:absolute;left:0;top:0;pointer-events:none}
+
+  #ui{position:fixed;left:16px;top:16px;display:flex;gap:8px;z-index:5;align-items:center}
   .btn{padding:8px 10px;border-radius:10px;border:1px solid #d1d5db;background:#0f172a;color:#fff;cursor:pointer}
   .chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#f8fafc;color:#111;cursor:pointer}
   .chip.active{background:#0f172a;color:#fff;border-color:#0f172a}
@@ -577,18 +593,25 @@ EDITOR_HTML = r"""<!doctype html>
   .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
   .ok{color:#0a7a2f}.err{color:#b00020;white-space:pre-wrap}
 
-  /* Overlay box */
   .box{
     position:absolute;
-    border:2px solid rgba(0,200,255,.9);
+    border:2px solid rgba(14,165,233,0);
     border-radius:8px;
     cursor:move;
     user-select:none;
+    background:transparent;
+    pointer-events:auto;
+    transition:border-color .06s ease;
   }
-  .box.active{ outline: 2px dashed #0ea5e9; }
+  .box:hover{ border-color: rgba(14,165,233,.35); }
+  .box.active{
+    border-color: rgba(14,165,233,1);
+    outline: 2px dashed #0ea5e9;
+  }
   .box .txt{
     position:absolute;
-    left:4px; top:4px; right:4px; bottom:4px;
+    left:6px; top:6px; right:6px; bottom:6px;
+    padding:2px 4px;
     overflow:hidden;
     white-space:pre-wrap;
     line-height:1.15;
@@ -599,7 +622,9 @@ EDITOR_HTML = r"""<!doctype html>
     position:absolute; right:-6px; bottom:-6px;
     width:12px; height:12px; border-radius:3px;
     background:#0f172a; cursor:nwse-resize;
+    display:none;
   }
+  .box.active .handle{ display:block; }
 
   .item{border:1px solid #e5e7eb;border-radius:12px;padding:10px;margin:8px 0}
   .item.active{outline:2px solid #0ea5e9}
@@ -617,11 +642,15 @@ EDITOR_HTML = r"""<!doctype html>
       <button class="btn" onclick="redo()" title="Ctrl+Y">Redo</button>
       <span class="chip" id="vEd" onclick="setView('edited')">Edited (live)</span>
       <span class="chip" id="vOr" onclick="setView('original')">Original</span>
+
+      <!-- Batch navigation -->
+      <button class="btn" onclick="prevItem()" title="Previous">◀</button>
+      <select id="batchSelect" onchange="jumpTo(this.value)" style="max-width:260px"></select>
+      <button class="btn" onclick="nextItem()" title="Next">▶</button>
     </div>
     <div id="stage">
       <img id="img" src="">
       <canvas id="brush"></canvas>
-      <!-- NEW: overlay container -->
       <div id="overlay"></div>
     </div>
   </div>
@@ -643,6 +672,7 @@ EDITOR_HTML = r"""<!doctype html>
       <button class="btn" onclick="saveBoxes()">Save boxes</button>
       <button class="btn" onclick="rebuild()">Rebuild clean</button>
 
+      <button class="btn" onclick="autoFitAll()">Auto-fit all</button>
       <button class="btn" onclick="renderAndDownload()">Download ZIP</button>
     </div>
 
@@ -660,37 +690,56 @@ EDITOR_HTML = r"""<!doctype html>
   </div>
 
 <script>
+let batch = []; // бүх layout зам
+let idx = 0;    // идэвхтэй индекс
+
 let layout=null, lp=null, clean='', edited='', view='edited', mode='paint';
 let img=document.getElementById('img'), brush=document.getElementById('brush'), bctx=brush.getContext('2d');
 let overlay=document.getElementById('overlay');
 let scale=1, boxes=[], active=-1, painting=false;
 let history=[], future=[];
-let dragging=false, resizing=false, dx=0, dy=0;
+let dragging=false, resizing=false, dx=0, dy=0, changed=false;
+let eraserCount=0;
 
 document.addEventListener('DOMContentLoaded', ()=>{
-  const q=new URL(location.href).searchParams.get('layout');
-  if(q){ document.getElementById('layout').value=q; openLayout(); }
+  const url = new URL(location.href);
+  const ls = url.searchParams.get('layouts');
+  const single = url.searchParams.get('layout');
+
+  if (ls) {
+    try {
+      batch = JSON.parse(ls);
+      idx = 0;
+      fillBatchSelect();
+      openLayoutByIndex(idx);
+    } catch(e) { console.error(e); }
+  } else if (single) {
+    document.getElementById('layout').value = single;
+    openLayout();
+  }
+
   setView('edited');
 
   document.getElementById('left').addEventListener('wheel',e=>{ if(e.ctrlKey){ e.preventDefault(); stepZoom(e.deltaY<0?0.1:-0.1);}},{passive:false});
   brush.addEventListener('mousedown',startPaint); window.addEventListener('mousemove',movePaint); window.addEventListener('mouseup',endPaint);
 
   window.addEventListener('keydown',e=>{
+    if(e.key === 'Escape'){ setActiveBox(-1); return; }
     if(e.ctrlKey && e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); }
     if(e.ctrlKey && e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
-    if(view!=='edited') return; // ORIGINAL үед keyboard move идэвхгүй
+    if(view!=='edited') return;
 
     if(active>=0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){
       e.preventDefault();
       const b=boxes[active]; if(!b) return;
       const step = e.shiftKey?10:1;
       let x=parseInt(b.style.left)||0, y=parseInt(b.style.top)||0;
+      const ox=x, oy=y;
       if(e.key==='ArrowLeft')  x-=step;
       if(e.key==='ArrowRight') x+=step;
       if(e.key==='ArrowUp')    y-=step;
       if(e.key==='ArrowDown')  y+=step;
-      b.style.left=x+'px'; b.style.top=y+'px';
-      setActiveBox(active);
+      if(x!==ox || y!==oy){ b.style.left=x+'px'; b.style.top=y+'px'; changed=true; }
     }
     if(view==='edited' && active>=0 && e.ctrlKey && (e.key==='d' || e.key==='D')){
       e.preventDefault();
@@ -705,6 +754,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
         parseInt(clone.style.width),parseInt(clone.style.height)
       ]});
       setActiveBox(boxes.length-1);
+      pushState();
     }
     if(view==='edited' && active>=0 && e.key==='Delete'){
       e.preventDefault();
@@ -713,16 +763,45 @@ document.addEventListener('DOMContentLoaded', ()=>{
       layout.boxes.splice(active,1);
       active=Math.min(active, boxes.length-1);
       setActiveBox(active);
+      pushState();
     }
   });
+
+  overlay.addEventListener('mousedown',e=>{
+    if(e.target===overlay){ setActiveBox(-1); }
+  });
 });
+
+function fillBatchSelect(){
+  const sel = document.getElementById('batchSelect');
+  sel.innerHTML = '';
+  batch.forEach((p,i)=>{
+    const opt = document.createElement('option');
+    const name = (p.split(/[\\/]/).pop() || ('Page '+(i+1)));
+    opt.value = i;
+    opt.textContent = `${i+1}/${batch.length} — ${name}`;
+    sel.appendChild(opt);
+  });
+  sel.value = idx.toString();
+}
+async function openLayoutByIndex(i){
+  if (i<0 || i>=batch.length) return;
+  idx = i;
+  document.getElementById('layout').value = batch[idx];
+  await openLayout();
+  const sel = document.getElementById('batchSelect');
+  if (sel) sel.value = idx.toString();
+}
+
+function prevItem(){ if (idx>0) openLayoutByIndex(idx-1); }
+function nextItem(){ if (idx<batch.length-1) openLayoutByIndex(idx+1); }
+function jumpTo(v){ const i = parseInt(v,10); if(!isNaN(i)) openLayoutByIndex(i); }
 
 function setView(v){
   view=v;
   document.getElementById('vEd').classList.toggle('active',v==='edited');
   document.getElementById('vOr').classList.toggle('active',v==='original');
 
-  // ORIGINAL: зөвхөн зураг, overlay/brush нуух
   const showOverlay = (v==='edited');
   overlay.style.display = showOverlay ? 'block' : 'none';
   brush.style.display   = showOverlay ? 'block' : 'none';
@@ -746,6 +825,7 @@ async function openLayout(){
   const r=await fetch('/api/open?layout='+encodeURIComponent(path)); const j=await r.json();
   if(!r.ok){ stat(j.error,true); return; }
   layout=j; lp=path; clean=j.clean_image; edited=j.edited_image;
+  eraserCount = (layout.erasers || []).length;
   await refreshImage(true);
   buildOverlays();
   buildList();
@@ -764,16 +844,37 @@ async function refreshImage(reset=false){
     tmp.src=url+'&probe=1&t='+(Date.now());
   });
 }
+
 function sizeBrush(){
   brush.width=img.naturalWidth; brush.height=img.naturalHeight;
   brush.style.width=img.naturalWidth+'px'; brush.style.height=img.naturalHeight+'px';
-  // overlay-ийг зурагтай ижил хэмжээтэй байлгах
   overlay.style.width=img.naturalWidth+'px';
   overlay.style.height=img.naturalHeight+'px';
   clearMask();
 }
 
-/* ======= Overlays ======= */
+function ensureMinSize(box){
+  const MIN_W=100, MIN_H=44;
+  box.style.width  = Math.max(MIN_W, parseInt(box.style.width)||0) + 'px';
+  box.style.height = Math.max(MIN_H, parseInt(box.style.height)||0) + 'px';
+}
+function autoFit(i){
+  const box = boxes[i]; if(!box) return;
+  const txt = box.querySelector('.txt');
+  const pad = 16;
+  box.style.width  = 'auto';
+  box.style.height = 'auto';
+  const w = Math.ceil(txt.scrollWidth  + pad);
+  const h = Math.ceil(txt.scrollHeight + pad);
+  box.style.width  = w + 'px';
+  box.style.height = h + 'px';
+  ensureMinSize(box);
+}
+function autoFitAll(){
+  (boxes||[]).forEach((_,i)=>autoFit(i));
+  pushState(); stat('Auto-fit all done');
+}
+
 function buildOverlays(){
   boxes.forEach(x=>x.remove()); boxes=[];
   overlay.innerHTML='';
@@ -786,8 +887,7 @@ function buildOverlays(){
 
     const txt=document.createElement('div'); txt.className='txt';
     txt.contentEditable='true';
-    const val=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    txt.textContent=val;
+    txt.textContent=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
 
     const style=(layout.styles&&layout.styles[i])?layout.styles[i]:{};
     txt.style.fontSize=(style.fontSize||24)+'px';
@@ -797,40 +897,55 @@ function buildOverlays(){
     box.appendChild(txt); box.appendChild(hdl);
     overlay.appendChild(box);
 
+    ensureMinSize(box);
+
     box.addEventListener('mousedown',e=>{
-      if(view!=='edited') return; // original үед interaction үгүй
+      if(view!=='edited') return;
       active=i; setActiveBox(i);
       const r=box.getBoundingClientRect();
-      if(e.target===hdl){ resizing=true; }
-      else { dragging=true; dx=e.clientX-r.left; dy=e.clientY-r.top; }
+      changed=false;
+      if(e.target===hdl){ resizing=true; } else { dragging=true; dx=e.clientX-r.left; dy=e.clientY-r.top; }
       document.body.style.userSelect='none';
     });
     window.addEventListener('mousemove',e=>{
       if(view!=='edited' || active!==i) return;
       if(dragging){
         const stg=brush.getBoundingClientRect();
-        const nx=(e.clientX-stg.left)/scale - dx;
-        const ny=(e.clientY-stg.top )/scale - dy;
-        box.style.left=Math.round(nx)+'px';
-        box.style.top =Math.round(ny)+'px';
+        const nx=Math.round((e.clientX-stg.left)/scale - dx);
+        const ny=Math.round((e.clientY-stg.top )/scale - dy);
+        if(nx!==parseInt(box.style.left) || ny!==parseInt(box.style.top)){
+          box.style.left=nx+'px'; box.style.top=ny+'px'; changed=true;
+        }
       }else if(resizing){
         const bcr=box.getBoundingClientRect();
-        const w=(e.clientX-bcr.left)/scale, h=(e.clientY-bcr.top)/scale;
-        box.style.width = Math.max(30, Math.round(w))+'px';
-        box.style.height= Math.max(20, Math.round(h))+'px';
+        const nw=Math.max(30, Math.round((e.clientX-bcr.left)/scale));
+        const nh=Math.max(20, Math.round((e.clientY-bcr.top )/scale));
+        if(nw!==parseInt(box.style.width) || nh!==parseInt(box.style.height)){
+          box.style.width=nw+'px'; box.style.height=nh+'px'; changed=true;
+        }
       }
     });
-    window.addEventListener('mouseup',()=>{ dragging=false; resizing=false; });
+    window.addEventListener('mouseup',()=>{
+      if(dragging||resizing){
+        if(changed) pushState();
+      }
+      dragging=false; resizing=false; changed=false;
+    });
 
-    box.addEventListener('dblclick', ()=>{ if(view==='edited') txt.focus(); });
+    box.addEventListener('dblclick', ()=>{ if(view==='edited'){ autoFit(i); pushState(); }});
+    txt.addEventListener('input', ()=> autoFit(i));
+
     boxes.push(box);
   });
+
+  setActiveBox(-1);
 }
 function setActiveBox(i){
+  active=i;
   boxes.forEach((b,idx)=>b.classList.toggle('active', idx===i));
+  [...document.querySelectorAll('.item')].forEach((el,idx)=>el.classList.toggle('active',idx===i));
 }
 
-/* --------- Collectors --------- */
 function collectBoxes(){
   return boxes.map((b,i)=>({
     index:i,
@@ -843,39 +958,50 @@ function collectBoxes(){
   }));
 }
 
-/* ======= Sidebar ======= */
 function buildList(){
   const host=document.getElementById('list'); host.innerHTML='';
   (layout.boxes||[]).forEach((b,i)=>{
     const it=document.createElement('div'); it.className='item'; it.id='it'+i;
     const o=document.createElement('div'); o.className='o'; o.textContent=b.text||'';
     const ta=document.createElement('textarea'); ta.value=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; });
+    ta.addEventListener('input',()=>{
+      const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value;
+      autoFit(i);
+    });
     ta.addEventListener('change',()=>{ pushState(); });
-    it.addEventListener('click',()=>{ selectItem(i); });
-    it.appendChild(o); it.appendChild(ta); host.appendChild(it);
+    it.addEventListener('click',()=>{ setActiveBox(i); boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'}); });
+    host.appendChild(it); it.appendChild(o); it.appendChild(ta);
   });
 }
-function selectItem(i){
-  [...document.querySelectorAll('.item')].forEach((el,idx)=>el.classList.toggle('active',idx===i));
-  active=i; boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'});
-}
-function collectTranslations(){ return [...document.querySelectorAll('#list textarea')].map(t=>t.value); }
 
-/* ======= Undo / Redo ======= */
-function snapshot(){ return { tr: collectTranslations(), bx: collectBoxes(), st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : [] }; }
-function applySnapshot(s){
+function snapshot(){
+  const brushPNG = brush.toDataURL('image/png');
+  return {
+    tr: [...document.querySelectorAll('#list textarea')].map(t=>t.value),
+    bx: collectBoxes(),
+    st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : [],
+    ec: eraserCount,
+    br: brushPNG
+  };
+}
+async function applySnapshot(s){
   const ta = [...document.querySelectorAll('#list textarea')];
   s.tr.forEach((v,i)=>{ if(ta[i]) ta[i].value=v; const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=v; });
   s.bx.forEach((b,i)=>{ const box=boxes[i]; if(!box) return; const [x,y,w,h]=b.bbox; box.style.left=x+'px'; box.style.top=y+'px'; box.style.width=w+'px'; box.style.height=h+'px'; });
   layout.styles = s.st;
+
+  await new Promise(res=>{ const im=new Image(); im.onload=()=>{ clearMask(); bctx.drawImage(im,0,0); res(); }; im.src=s.br; });
+
+  if(lp){
+    const r=await fetch('/api/set_eraser_count',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,count:s.ec})});
+    if(r.ok){ const j=await r.json(); eraserCount=j.eraser_count ?? s.ec; clean=j.clean_image || clean; await refreshImage(false); }
+  }
 }
 function pushState(){ history.push(snapshot()); if(history.length>100) history.shift(); future.length=0; }
 function clearHistory(){ history.length=0; future.length=0; }
 function undo(){ if(history.length<=1) return; const cur=history.pop(); future.push(cur); applySnapshot(history[history.length-1]); }
 function redo(){ if(future.length===0) return; const s=future.pop(); history.push(s); applySnapshot(s); }
 
-/* ======= Actions ======= */
 async function saveBoxes(){
   if(!lp) return;
   const r=await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
@@ -895,11 +1021,13 @@ async function applyStyle(){
 }
 async function renderAndDownload(){
   if(!lp) return;
+
+  // Одоогийн хуудсыг render хийж хадгална
   await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
-  const r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, translations:collectTranslations()})});
-  const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
-  edited=j.out_image;
-  const items=encodeURIComponent(JSON.stringify([lp]));
+  await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, translations:[...document.querySelectorAll('#list textarea')].map(t=>t.value)})});
+
+  // Batch байвал бүгдийг татна
+  const items=encodeURIComponent(JSON.stringify(batch.length ? batch : [lp]));
   location.href='/api/download_zip?include=edited&items='+items;
   stat('Rendered & downloading ZIP…');
 }
@@ -910,9 +1038,7 @@ async function rebuild(){
   clean=j.clean_image; await refreshImage(false); stat('Clean updated');
 }
 function stat(m,err=false){ document.getElementById('stat').innerHTML=err?('<span class="err">'+m+'</span>'):('<span class="ok">'+m+'</span>'); }
-async function exists(p){ if(!p) return false; const r=await fetch('/api/exists?path='+encodeURIComponent(p)); if(!r.ok) return false; const j=await r.json(); return !!j.exists; }
 
-/* ======= Brush Inpaint ======= */
 function startPaint(e){
   if(mode!=='paint' || view!=='edited') return;
   painting=true; brush.style.pointerEvents='auto';
@@ -938,7 +1064,9 @@ async function applyMask(){
   clearMask();
   const r=await fetch('/api/erase_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,mask_data_url:dataURL})});
   const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
+  eraserCount = j.eraser_count ?? eraserCount;
   clean=j.clean_image; await refreshImage(false); stat('Inpaint OK');
+  pushState();
 }
 </script>
 </body></html>
