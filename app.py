@@ -567,6 +567,8 @@ EDITOR_HTML = r"""<!doctype html>
   #stage{position:relative;display:inline-block;margin:14px}
   #img{display:block;max-width:none}
   #brush{position:absolute;left:0;top:0;pointer-events:none}
+  /* NEW: overlay давхарга — зөвхөн edited дээр харагдана */
+  #overlay{position:absolute;left:0;top:0}
   #ui{position:fixed;left:16px;top:16px;display:flex;gap:8px;z-index:5}
   .btn{padding:8px 10px;border-radius:10px;border:1px solid #d1d5db;background:#0f172a;color:#fff;cursor:pointer}
   .chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#f8fafc;color:#111;cursor:pointer}
@@ -575,7 +577,7 @@ EDITOR_HTML = r"""<!doctype html>
   .row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
   .ok{color:#0a7a2f}.err{color:#b00020;white-space:pre-wrap}
 
-  /* Overlay box (нэг л элементийг чирж/жижгэрүүлнэ) */
+  /* Overlay box */
   .box{
     position:absolute;
     border:2px solid rgba(0,200,255,.9);
@@ -599,7 +601,6 @@ EDITOR_HTML = r"""<!doctype html>
     background:#0f172a; cursor:nwse-resize;
   }
 
-  /* Sidebar list */
   .item{border:1px solid #e5e7eb;border-radius:12px;padding:10px;margin:8px 0}
   .item.active{outline:2px solid #0ea5e9}
   .item .o{font-size:12px;color:#6b7280;white-space:pre-wrap}
@@ -620,6 +621,8 @@ EDITOR_HTML = r"""<!doctype html>
     <div id="stage">
       <img id="img" src="">
       <canvas id="brush"></canvas>
+      <!-- NEW: overlay container -->
+      <div id="overlay"></div>
     </div>
   </div>
 
@@ -659,6 +662,7 @@ EDITOR_HTML = r"""<!doctype html>
 <script>
 let layout=null, lp=null, clean='', edited='', view='edited', mode='paint';
 let img=document.getElementById('img'), brush=document.getElementById('brush'), bctx=brush.getContext('2d');
+let overlay=document.getElementById('overlay');
 let scale=1, boxes=[], active=-1, painting=false;
 let history=[], future=[];
 let dragging=false, resizing=false, dx=0, dy=0;
@@ -674,7 +678,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
   window.addEventListener('keydown',e=>{
     if(e.ctrlKey && e.key.toLowerCase()==='z'){ e.preventDefault(); undo(); }
     if(e.ctrlKey && e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
-    // Arrow move for active box
+    if(view!=='edited') return; // ORIGINAL үед keyboard move идэвхгүй
+
     if(active>=0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){
       e.preventDefault();
       const b=boxes[active]; if(!b) return;
@@ -687,14 +692,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
       b.style.left=x+'px'; b.style.top=y+'px';
       setActiveBox(active);
     }
-    // Duplicate
-    if(active>=0 && e.ctrlKey && (e.key==='d' || e.key==='D')){
+    if(view==='edited' && active>=0 && e.ctrlKey && (e.key==='d' || e.key==='D')){
       e.preventDefault();
       const src=boxes[active];
       const clone=src.cloneNode(true);
       clone.style.left=(parseInt(src.style.left)+12)+'px';
       clone.style.top =(parseInt(src.style.top )+12)+'px';
-      document.getElementById('stage').appendChild(clone);
+      overlay.appendChild(clone);
       boxes.push(clone);
       layout.boxes.push({text:'', bbox:[
         parseInt(clone.style.left),parseInt(clone.style.top),
@@ -702,8 +706,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ]});
       setActiveBox(boxes.length-1);
     }
-    // Delete
-    if(active>=0 && e.key==='Delete'){
+    if(view==='edited' && active>=0 && e.key==='Delete'){
       e.preventDefault();
       boxes[active].remove();
       boxes.splice(active,1);
@@ -718,8 +721,16 @@ function setView(v){
   view=v;
   document.getElementById('vEd').classList.toggle('active',v==='edited');
   document.getElementById('vOr').classList.toggle('active',v==='original');
+
+  // ORIGINAL: зөвхөн зураг, overlay/brush нуух
+  const showOverlay = (v==='edited');
+  overlay.style.display = showOverlay ? 'block' : 'none';
+  brush.style.display   = showOverlay ? 'block' : 'none';
+  brush.style.pointerEvents = showOverlay ? 'auto' : 'none';
+
   refreshImage(true);
 }
+
 function setMode(m){ mode=m; brush.style.pointerEvents = (mode==='paint' && view==='edited')?'auto':'none'; }
 function stepZoom(d){ scale=Math.min(6,Math.max(0.1,scale+d)); document.getElementById('stage').style.transform='scale('+scale+')'; }
 function actual(){ scale=1; document.getElementById('stage').style.transform='scale(1)'; }
@@ -753,12 +764,19 @@ async function refreshImage(reset=false){
     tmp.src=url+'&probe=1&t='+(Date.now());
   });
 }
-function sizeBrush(){ brush.width=img.naturalWidth; brush.height=img.naturalHeight; brush.style.width=img.naturalWidth+'px'; brush.style.height=img.naturalHeight+'px'; clearMask(); }
+function sizeBrush(){
+  brush.width=img.naturalWidth; brush.height=img.naturalHeight;
+  brush.style.width=img.naturalWidth+'px'; brush.style.height=img.naturalHeight+'px';
+  // overlay-ийг зурагтай ижил хэмжээтэй байлгах
+  overlay.style.width=img.naturalWidth+'px';
+  overlay.style.height=img.naturalHeight+'px';
+  clearMask();
+}
 
 /* ======= Overlays ======= */
 function buildOverlays(){
   boxes.forEach(x=>x.remove()); boxes=[];
-  const parent=document.getElementById('stage');
+  overlay.innerHTML='';
 
   (layout.boxes||[]).forEach((b,i)=>{
     const [x,y,w,h]=b.bbox.map(v=>parseInt(v));
@@ -777,9 +795,10 @@ function buildOverlays(){
 
     const hdl=document.createElement('div'); hdl.className='handle';
     box.appendChild(txt); box.appendChild(hdl);
-    parent.appendChild(box);
+    overlay.appendChild(box);
 
     box.addEventListener('mousedown',e=>{
+      if(view!=='edited') return; // original үед interaction үгүй
       active=i; setActiveBox(i);
       const r=box.getBoundingClientRect();
       if(e.target===hdl){ resizing=true; }
@@ -787,7 +806,7 @@ function buildOverlays(){
       document.body.style.userSelect='none';
     });
     window.addEventListener('mousemove',e=>{
-      if(active!==i) return;
+      if(view!=='edited' || active!==i) return;
       if(dragging){
         const stg=brush.getBoundingClientRect();
         const nx=(e.clientX-stg.left)/scale - dx;
@@ -803,7 +822,7 @@ function buildOverlays(){
     });
     window.addEventListener('mouseup',()=>{ dragging=false; resizing=false; });
 
-    box.addEventListener('dblclick', ()=>{ txt.focus(); });
+    box.addEventListener('dblclick', ()=>{ if(view==='edited') txt.focus(); });
     boxes.push(box);
   });
 }
@@ -831,9 +850,7 @@ function buildList(){
     const it=document.createElement('div'); it.className='item'; it.id='it'+i;
     const o=document.createElement('div'); o.className='o'; o.textContent=b.text||'';
     const ta=document.createElement('textarea'); ta.value=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    ta.addEventListener('input',()=>{
-      const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value;
-    });
+    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; });
     ta.addEventListener('change',()=>{ pushState(); });
     it.addEventListener('click',()=>{ selectItem(i); });
     it.appendChild(o); it.appendChild(ta); host.appendChild(it);
@@ -843,26 +860,14 @@ function selectItem(i){
   [...document.querySelectorAll('.item')].forEach((el,idx)=>el.classList.toggle('active',idx===i));
   active=i; boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'});
 }
-function collectTranslations(){
-  return [...document.querySelectorAll('#list textarea')].map(t=>t.value);
-}
+function collectTranslations(){ return [...document.querySelectorAll('#list textarea')].map(t=>t.value); }
 
 /* ======= Undo / Redo ======= */
-function snapshot(){
-  return {
-    tr: collectTranslations(),
-    bx: collectBoxes(),
-    st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : []
-  };
-}
+function snapshot(){ return { tr: collectTranslations(), bx: collectBoxes(), st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : [] }; }
 function applySnapshot(s){
   const ta = [...document.querySelectorAll('#list textarea')];
   s.tr.forEach((v,i)=>{ if(ta[i]) ta[i].value=v; const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=v; });
-  s.bx.forEach((b,i)=>{
-    const box=boxes[i]; if(!box) return;
-    const [x,y,w,h]=b.bbox;
-    box.style.left=x+'px'; box.style.top=y+'px'; box.style.width=w+'px'; box.style.height=h+'px';
-  });
+  s.bx.forEach((b,i)=>{ const box=boxes[i]; if(!box) return; const [x,y,w,h]=b.bbox; box.style.left=x+'px'; box.style.top=y+'px'; box.style.width=w+'px'; box.style.height=h+'px'; });
   layout.styles = s.st;
 }
 function pushState(){ history.push(snapshot()); if(history.length>100) history.shift(); future.length=0; }

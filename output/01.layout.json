@@ -1,0 +1,360 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\01.png",
+  "boxes": [
+    {
+      "text": "--",
+      "bbox": [
+        484,
+        61,
+        25,
+        11
+      ]
+    },
+    {
+      "text": "HEY.",
+      "bbox": [
+        533,
+        57,
+        37,
+        24
+      ]
+    },
+    {
+      "text": "HEY,",
+      "bbox": [
+        466,
+        130,
+        40,
+        19
+      ]
+    },
+    {
+      "text": "HONEY!",
+      "bbox": [
+        454,
+        151,
+        64,
+        22
+      ]
+    },
+    {
+      "text": "THIS",
+      "bbox": [
+        155,
+        332,
+        39,
+        18
+      ]
+    },
+    {
+      "text": "CLEARLY",
+      "bbox": [
+        138,
+        352,
+        73,
+        21
+      ]
+    },
+    {
+      "text": "ISN'T ...",
+      "bbox": [
+        144,
+        370,
+        65,
+        25
+      ]
+    },
+    {
+      "text": "WHISPER",
+      "bbox": [
+        312,
+        371,
+        38,
+        15
+      ]
+    },
+    {
+      "text": "WHISPER",
+      "bbox": [
+        824,
+        394,
+        38,
+        28
+      ]
+    },
+    {
+      "text": "CLANCE",
+      "bbox": [
+        19,
+        473,
+        49,
+        56
+      ]
+    },
+    {
+      "text": "HE'S BEEN",
+      "bbox": [
+        277,
+        504,
+        91,
+        22
+      ]
+    },
+    {
+      "text": "ACTING WEIRD",
+      "bbox": [
+        261,
+        526,
+        125,
+        22
+      ]
+    },
+    {
+      "text": "WHAT DO",
+      "bbox": [
+        776,
+        521,
+        78,
+        21
+      ]
+    },
+    {
+      "text": "SINCE THE",
+      "bbox": [
+        279,
+        549,
+        88,
+        22
+      ]
+    },
+    {
+      "text": "YOU THINK",
+      "bbox": [
+        774,
+        541,
+        86,
+        20
+      ]
+    },
+    {
+      "text": "MOMENT HE",
+      "bbox": [
+        271,
+        570,
+        104,
+        22
+      ]
+    },
+    {
+      "text": "HAPPENED",
+      "bbox": [
+        773,
+        561,
+        85,
+        20
+      ]
+    },
+    {
+      "text": "CAME HOME!",
+      "bbox": [
+        267,
+        592,
+        112,
+        23
+      ]
+    },
+    {
+      "text": "TO RINTARO?",
+      "bbox": [
+        763,
+        583,
+        106,
+        21
+      ]
+    },
+    {
+      "text": "HUH?",
+      "bbox": [
+        584,
+        601,
+        52,
+        23
+      ]
+    },
+    {
+      "text": "... THE",
+      "bbox": [
+        726,
+        1012,
+        88,
+        42
+      ]
+    },
+    {
+      "text": "FACE YOU'D",
+      "bbox": [
+        680,
+        1054,
+        178,
+        36
+      ]
+    },
+    {
+      "text": "MAKE WHEN",
+      "bbox": [
+        680,
+        1092,
+        183,
+        33
+      ]
+    },
+    {
+      "text": "WATCHING",
+      "bbox": [
+        694,
+        1129,
+        151,
+        34
+      ]
+    },
+    {
+      "text": "TV ...!",
+      "bbox": [
+        731,
+        1165,
+        82,
+        34
+      ]
+    }
+  ],
+  "translations": [
+    "--",
+    "Хөөё.",
+    "Хөөё,",
+    "Хайраа!",
+    "ЭНЭ",
+    "ТОДОРХОЙ",
+    "БИШ…",
+    "WHISPER",
+    "WHISPER",
+    "Огцом",
+    "ТЭР БАЙСАН",
+    "ХАЧИРХАЛТАЙ ЖҮЖИГЛЭХ",
+    "ЮУ ХИЙХ ВЭ",
+    "ОНООС ХОЙШ",
+    "ТА БОДОЖ БАЙНА",
+    "МӨЧ",
+    "БОЛСОН",
+    "ГЭРТЭЭ ИРЛЭЭ!",
+    "Ринтарод?",
+    "Аа?",
+    "… НЬ",
+    "ЧАМТАЙ НҮҮР ТУЛНА",
+    "ХЭЗЭЭ ХИЙХ",
+    "ҮЗЭХ",
+    "ТВ…!"
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": []
+}
