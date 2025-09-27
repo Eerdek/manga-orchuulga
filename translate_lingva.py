@@ -1,13 +1,18 @@
-# translate_lingva.py
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, List, Tuple
 import os, time, random, sqlite3, requests, string, re
 from dotenv import load_dotenv
-from glossary import GLOSSARY_MAP, KEEP_AS_IS  # SFX_MAP хэрэггүй
+
+# --- glossary импорт (KEEP_PATTERNS байхгүй бол аюулгүй fallback) ---
+try:
+    from glossary import GLOSSARY_MAP, KEEP_AS_IS, KEEP_PATTERNS  # noqa
+except Exception:
+    from glossary import GLOSSARY_MAP, KEEP_AS_IS  # type: ignore
+    KEEP_PATTERNS: List[str] = []
 
 load_dotenv()
 
-# --- style импортыг уян хатан болгоё (байхгүй бол fallback-ууд ажиллана)
+# --- style импортыг уян хатан ---
 try:
     from style import (
         apply_glossary_tokenwise as _apply_glossary_tokenwise_ext,
@@ -184,9 +189,8 @@ def lingva_translate_with_retries(text: str, src: str, tgt: str) -> Optional[str
             time.sleep(wait * (0.9 + 0.2*random.random()))
     return last
 
-# -------- Fallbacks for style.* if missing --------
+# -------- Fallbacks for style.* --------
 def _fallback_apply_glossary_tokenwise(text: str) -> str:
-    # энгийн, кейсийн эхний үсгийг хадгална
     def repl(m):
         src = m.group(0)
         key = src.lower()
@@ -209,15 +213,11 @@ def _fallback_post_polish_mn(text: str) -> str:
     return t
 
 def _fallback_reflow_fragments(lines):
-    # OCR мөрүүдийг нэгтгэж нэгэн текст болгоно
     text = " ".join([l.strip() for l in lines if l.strip()])
     if not text:
         return lines
-    import re
-    # Өгүүлбэрээр таслана
     sentences = re.split(r'(?<=[.!?。！？])\s+', text)
     return [s.strip() for s in sentences if s.strip()]
-
 
 def apply_glossary_tokenwise(text: str) -> str:
     return _apply_glossary_tokenwise_ext(text) if _apply_glossary_tokenwise_ext else _fallback_apply_glossary_tokenwise(text)
@@ -236,6 +236,7 @@ def translate_sfx(line: str) -> str:
 
 # -------- Helpers --------
 _LATIN_RE = re.compile(r'[A-Za-z]')
+_TERMINAL_RE = re.compile(r'[.!?。！？…]$')
 
 def _has_latin(s: str) -> bool:
     return bool(_LATIN_RE.search(s or ""))
@@ -243,85 +244,261 @@ def _has_latin(s: str) -> bool:
 def _same_ignorecase(a: str, b: str) -> bool:
     return (a or "").strip().lower() == (b or "").strip().lower()
 
+# -------- KEEP masking (орчуулагдахгүй хэсгийг хамгаална) --------
+_PLACEHOLDER = "⟦K{}⟧"
+
+def _build_keep_regex():
+    toks = [re.escape(t) for t in (KEEP_AS_IS or set()) if t]
+    pats = list(KEEP_PATTERNS or [])
+    if not toks and not pats:
+        return None
+    alt = []
+    if toks:
+        alt.append(r"(?:\b(?:%s)\b)" % "|".join(toks))
+    if pats:
+        alt.extend(pats)
+    rx = "|".join(alt)
+    try:
+        return re.compile(rx, flags=re.IGNORECASE)
+    except re.error:
+        return None
+
+_KEEP_RX = _build_keep_regex()
+
+def _mask_keep_tokens(text: str):
+    if not text or not _KEEP_RX:
+        return text, []
+    vals: List[str] = []
+    def repl(m):
+        i = len(vals)
+        vals.append(m.group(0))
+        return _PLACEHOLDER.format(i)
+    masked = _KEEP_RX.sub(repl, text)
+    return masked, vals
+
+def _unmask_keep_tokens(text: str, vals: List[str]):
+    if not text or not vals:
+        return text
+    for i, v in enumerate(vals):
+        text = text.replace(_PLACEHOLDER.format(i), v)
+    return text
+
+# -------- Geometry-based grouping --------
+def _coalesce_by_geometry(lines: List[str],
+                          boxes: List[Tuple[int,int,int,int]]) -> Tuple[List[str], List[List[int]]]:
+    """
+    Нэг бөмбөлөгт хамт байрласан OCR мөрүүдийг bbox-аар бүлэглэнэ.
+    Буцах:
+      merged_texts, groups (эх индексүүдийн жагсаалт)
+    """
+    n = len(lines)
+    idxs = list(range(n))
+
+    # уншлагын дараалал: эхлээд y, тэгээд x
+    idxs.sort(key=lambda i: (boxes[i][1], boxes[i][0]))
+
+    merged: List[str] = []
+    groups: List[List[int]] = []
+
+    def same_bubble(i: int, j: int) -> bool:
+        x1,y1,w1,h1 = boxes[i]; x2,y2,w2,h2 = boxes[j]
+        r1 = (x1, y1, x1+w1, y1+h1)
+        r2 = (x2, y2, x2+w2, y2+h2)
+
+        # хэвтээ давхцлын хувь (intersection / min width)
+        ix = min(r1[2], r2[2]) - max(r1[0], r2[0])
+        horiz_overlap = max(0, ix) / max(1, min(w1, w2))
+
+        # босоо зай
+        vgap = max(0, y2 - r1[3]) if y2 >= y1 else max(0, y1 - r2[3])
+
+        # төвүүдийн x зөрүү
+        cx1, cx2 = x1 + w1/2.0, x2 + w2/2.0
+        dx = abs(cx1 - cx2)
+
+        h_avg = (h1 + h2) / 2.0
+        w_avg = (w1 + w2) / 2.0
+
+        return (horiz_overlap >= 0.35) and (vgap <= max(10, 0.7*h_avg)) and (dx <= 0.6*w_avg)
+
+    used = set()
+    for i in idxs:
+        if i in used:
+            continue
+        grp = [i]
+        text = (lines[i] or "").strip()
+        used.add(i)
+
+        # ихдээ дараагийн 2-3 мөрийг л наана
+        added = 0
+        for j in idxs:
+            if j in used:
+                continue
+            if added >= 3:
+                break
+            if same_bubble(grp[-1], j):
+                t = (lines[j] or "").strip()
+                if t:
+                    text = f"{text} {t}"
+                grp.append(j)
+                used.add(j)
+                added += 1
+
+        merged.append(text)
+        groups.append(sorted(grp))
+
+    zipped = sorted(zip(groups, merged), key=lambda gm: min(gm[0]) if gm[0] else 1e9)
+    groups = [g for g,_ in zipped]
+    merged = [m for _,m in zipped]
+    return merged, groups
+
+# --- Text-only fallback grouping ---
+def _is_short_shout(s: str) -> bool:
+    t = (s or "").strip()
+    if not t:
+        return False
+    core = re.sub(r"[^\w]+", "", t)
+    if len(core) <= 8 and (core.isupper() or core.lower() in {
+        "hey","honey","this","clearly","wait","look","oh","ah","um","hmm","yo"
+    }):
+        return True
+    if re.search(r'[,:;–—-]$', t):
+        return True
+    return False
+
+def _should_merge_text(cur: str, nxt: str) -> bool:
+    if not cur or not nxt:
+        return False
+    a = cur.strip(); b = nxt.strip()
+    if not a or not b:
+        return False
+    if not _TERMINAL_RE.search(a):
+        if _is_short_shout(a) or len(a) <= 18:
+            return True
+    if _is_short_shout(a) and len(b) >= 2:
+        return True
+    return False
+
+def _coalesce_by_text(lines: List[str]) -> Tuple[List[str], List[List[int]]]:
+    merged: List[str] = []
+    groups: List[List[int]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        cur = (lines[i] or "").strip()
+        if not cur:
+            merged.append("")
+            groups.append([i])
+            i += 1
+            continue
+        grp = [i]; text = cur; extra = 0; j = i+1
+        while j < n and extra < 2:
+            nxt = (lines[j] or "").strip()
+            if not nxt:
+                break
+            if _should_merge_text(text, nxt):
+                text = f"{text} {nxt}"; grp.append(j); extra += 1; j += 1
+                if _TERMINAL_RE.search(text.strip()):
+                    break
+            else:
+                break
+        merged.append(text); groups.append(grp); i = grp[-1] + 1
+    return merged, groups
+
+# -------- Custom semantic rules (optional) --------
+def apply_semantic_rules(text: str) -> str:
+    if not text:
+        return text
+    # Жишээ дүрэм:
+    text = re.sub(r"\binput text\b", "энэ юу юм бэ", text, flags=re.IGNORECASE)
+    return text
+
 # -------- Public API --------
 def translate_lines_impl(lines,
                          source_lang: str = SRC_DEFAULT,
                          target_lang: str = TGT_DEFAULT,
                          reflow=False, do_polish=True,
                          system_override: Optional[str]=None,
-                         local_only=False, force_online=False):
+                         local_only=False, force_online=False,
+                         boxes: Optional[List[Tuple[int,int,int,int]]] = None):
+    """
+    lines: OCR мөрүүд
+    boxes: OCR мөр бүрийн bbox (x,y,w,h). Байвал геометрээр бүлэглэнэ.
+    """
     if not lines:
         return []
 
-    raw = reflow_fragments(lines) if reflow else lines
-    results = []
+    # 0) Бүлэглэлт
+    if boxes and len(boxes) == len(lines):
+        merged_lines, groups = _coalesce_by_geometry([l if isinstance(l,str) else "" for l in lines], boxes)
+    else:
+        merged_lines, groups = _coalesce_by_text([l if isinstance(l,str) else "" for l in lines])
 
-    for s in raw:
-        if not s:
-            results.append("")
+    # 1) Бүлэг бүрийг орчуулах
+    translated: List[str] = []
+    for s in merged_lines:
+        src_text = s.strip()
+        if not src_text:
+            translated.append("")
             continue
 
-        norm = _normalize_token(s)
-
-        # 1) Glossary (punct-aware) – ЭХЭНД
-        g = apply_glossary(s)
+        # Glossary
+        g = apply_glossary(src_text)
         if g is not None:
             out = post_polish_mn(g) if do_polish else g
-            results.append(out)
-            tm_put(s, out, "glossary")
-            continue
+            translated.append(out); tm_put(src_text, out, "glossary"); continue
 
-        # 2) KEEP_AS_IS – глоссариас давуу биш (давхцал шүүгдсэн)
+        # KEEP (бүхэл текст KEEP бол шууд алгасна)
+        norm = _normalize_token(src_text)
         if norm in _KEEP_NORM:
-            results.append(s)
-            tm_put(s, s, "keep")
-            continue
+            translated.append(src_text); tm_put(src_text, src_text, "keep"); continue
 
-        # 3) SFX – зөвхөн style.is_sfx/translate_sfx
-        if is_sfx(s):
-            val = translate_sfx(s)
+        # SFX
+        if is_sfx(src_text):
+            val = translate_sfx(src_text)
             out = post_polish_mn(val) if do_polish else val
-            results.append(out)
-            tm_put(s, out, "sfx")
-            continue
+            translated.append(out); tm_put(src_text, out, "sfx"); continue
 
-        # 4) TM cache
+        # TM cache
         if not force_online:
-            cached = tm_get(s)
-            if cached is not None and cached != s:
-                results.append(cached)
-                continue
+            cached = tm_get(src_text)
+            if cached is not None and cached != src_text:
+                translated.append(cached); continue
 
-        # 5) Local-only fallback
+        # Local-only
         if local_only:
-            val = apply_glossary_tokenwise(s)
+            val = apply_glossary_tokenwise(src_text)
             out = post_polish_mn(val) if do_polish else val
-            results.append(out)
-            continue
+            translated.append(out); continue
 
-        # 6) Онлайн орчуулга
-        tr = lingva_translate_with_retries(s, source_lang, target_lang)
+        # ---------- KEEP дотоод токенуудыг масклах ----------
+        masked_text, keep_vals = _mask_keep_tokens(src_text)
 
-        if (not tr or _same_ignorecase(tr, s)) and _has_latin(s):
-            tr2 = lingva_translate_with_retries(s, "en", target_lang)
-            if tr2 and not _same_ignorecase(tr2, s):
-                print(f"[lingva:fallback-en] {s!r} -> {tr2!r}")
+        # Онлайн
+        tr = lingva_translate_with_retries(masked_text, source_lang, target_lang)
+        if (not tr or _same_ignorecase(tr, masked_text)) and _has_latin(masked_text):
+            tr2 = lingva_translate_with_retries(masked_text, "en", target_lang)
+            if tr2 and not _same_ignorecase(tr2, masked_text):
                 tr = tr2
 
-        if tr and not _same_ignorecase(tr, s):
+        if tr and not _same_ignorecase(tr, masked_text):
+            tr = _unmask_keep_tokens(tr, keep_vals)          # KEEP-г яг хэлбэрээр нь сэргээе
             final = apply_glossary_tokenwise(tr)
+            final = apply_semantic_rules(final)
             final = post_polish_mn(final) if do_polish else final
-            results.append(final)
-            tm_put(s, final, "lingva")
+            translated.append(final); tm_put(src_text, final, "lingva")
         else:
-            # эцсийн fallback: токеноор глоссари
-            val = apply_glossary_tokenwise(s)
+            val = apply_glossary_tokenwise(src_text)
             final = post_polish_mn(val) if do_polish else val
-            results.append(final)
-            if final != s:
-                tm_put(s, final, "local-fallback")
+            translated.append(final)
+            if final != src_text:
+                tm_put(src_text, final, "local-fallback")
 
-    return results
+    # 2) Эх OCR мөрүүдэд тараах — бүлгийн эхний box-д л байрлуулна
+    out = [""] * len(lines)
+    for t, grp in zip(translated, groups):
+        if grp:
+            out[grp[0]] = t
+    return out
 
 def translate_lines(lines, source_lang: str = SRC_DEFAULT, target_lang: str = TGT_DEFAULT,
                     reflow=False, do_polish=True, system_override: Optional[str]=None):

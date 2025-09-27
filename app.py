@@ -1,9 +1,9 @@
 # app.py
 from __future__ import annotations
-import argparse, io, os, json, base64, zipfile, pathlib, traceback
+import argparse, io, os, json, base64, zipfile, pathlib, traceback, re as _re
 from typing import List, Dict, Any, Tuple
 from flask import Flask, request, Response, send_file, send_from_directory
-from PIL import Image
+from PIL import Image, ImageFilter  # ⬅️ MaxFilter/Blur ашиглана
 import numpy as np
 
 # ----- project deps -----
@@ -104,11 +104,11 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
     original = Image.open(src_path).convert("RGBA")
     base = original.copy()
 
-    # ---- ERASE (same as before, +strength blend) ----
+    # ---- ERASE (auto + mask) ----
     auto_erase = os.getenv("AUTO_ERASE", "1") not in ("0","false","False","no","No")
-    erasers = list(data.get("erasers", []))
 
-    if auto_erase and not erasers:
+    # 1) ЭХЛЭЭД үргэлж auto pass (асуудалгүй идемпотент)
+    if auto_erase:
         for b in data.get("boxes", []):
             try:
                 erase_text_area(
@@ -119,38 +119,39 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
                 )
             except Exception:
                 pass
-    else:
-        for e in erasers:
-            if e.get("type") == "bbox":
-                bbox = tuple(e.get("bbox", [0, 0, 0, 0]))
-                params = e.get("params") or {}
-                erase_text_area(
-                    base, box=bbox,
-                    expand=int(params.get("expand", 14)),
-                    feather=int(params.get("feather", 3)),
-                    corner=int(params.get("corner", 6)),
-                    aggressive=int(params.get("aggressive", 2)),
-                    mask_mode=e.get("mode", "auto"),
-                    pattern=params.get("pattern")
-                )
-            elif e.get("type") == "mask":
-                mf = e.get("mask_file")
-                if not mf or not pathlib.Path(mf).exists():
-                    continue
-                mask = Image.open(mf).convert("L")
-                mu8 = np.array(mask, dtype=np.uint8)
-                ys, xs = np.where(mu8 > 0)
-                if xs.size and ys.size:
-                    x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
-                    out = inpaint_with_mask(base, mu8, (int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
-                    if out is not None:
-                        s = float(e.get("strength", 1.0))
-                        if s >= 0.999:
-                            base.paste(out)
-                        else:
-                            # blend inpaint result over base using strength-scaled mask
-                            m = mask.point(lambda p: int(p * s))
-                            base = Image.composite(out.convert("RGBA"), base, m)
+
+    # 2) ДАРАА НЬ таны гарын erasers (bbox/mask)
+    for e in data.get("erasers", []):
+        if e.get("type") == "bbox":
+            bbox = tuple(e.get("bbox", [0, 0, 0, 0]))
+            params = e.get("params") or {}
+            erase_text_area(
+                base, box=bbox,
+                expand=int(params.get("expand", 14)),
+                feather=int(params.get("feather", 3)),
+                corner=int(params.get("corner", 6)),
+                aggressive=int(params.get("aggressive", 2)),
+                mask_mode=e.get("mode", "auto"),
+                pattern=params.get("pattern")
+            )
+        elif e.get("type") == "mask":
+            mf = e.get("mask_file")
+            if not mf or not pathlib.Path(mf).exists():
+                continue
+            mask = Image.open(mf).convert("L")
+            mu8 = np.array(mask, dtype=np.uint8)
+            ys, xs = np.where(mu8 > 0)
+            if xs.size and ys.size:
+                x1, y1, x2, y2 = xs.min(), ys.min(), xs.max()+1, ys.max()+1
+                out = inpaint_with_mask(base, mu8, (int(x1),int(y1),int(x2-x1),int(y2-y1)))
+                if out is not None:
+                    s = float(e.get("strength", 1.0))
+                    if s >= 0.999:
+                        base.paste(out)
+                    else:
+                        m = mask.point(lambda p: int(p * s))
+                        base = Image.composite(out.convert("RGBA"), base, m)
+
 
     # ---- RESTORE (overlay original by mask with strength) ----
     for r in data.get("restores", []):
@@ -165,7 +166,6 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
         s = float(r.get("strength", 1.0))
         if s < 0.999:
             m = m.point(lambda p: int(p * s))
-        # Here original is on top → EXACT original colors on masked area
         base = Image.composite(original, base, m)
 
     base.save(clean, "PNG")
@@ -190,6 +190,53 @@ def _extract_boxes(ocr_json: Dict[str, Any]) -> List[OCRBox]:
             x,y,w,h = polygon_to_bbox(poly)
             boxes.append(OCRBox(text=txt, bbox=(x,y,w,h)))
     return boxes
+
+# --- Box utils for grouping + pruning ---
+_NOISE_PUNCT_RE = _re.compile(r"^[\s\.\,\!\?\-—–…:;~·・/\\|]+$")
+_UP_ASCII_RE    = _re.compile(r"^[A-Z0-9\s'!?\.]+$")
+
+def _is_noise_text(t: str) -> bool:
+    s = (t or "").strip()
+    if not s: return True
+    if _NOISE_PUNCT_RE.match(s): return True
+    if len(s) <= 1: return True
+    if len(s) <= 12 and _UP_ASCII_RE.fullmatch(s) and s == s.upper() and s not in ("OK","TV"):
+        return True
+    return False
+
+def _rect_union(a, b):
+    ax,ay,aw,ah = a; bx,by,bw,bh = b
+    x1=min(ax,bx); y1=min(ay,by)
+    x2=max(ax+aw,bx+bw); y2=max(ay+ah,bx+bh)
+    return (x1,y1,x2-x1,y2-y1)
+
+def _rect_inflate(a, d):
+    x,y,w,h=a
+    return (x-d, y-d, w+2*d, h+2*d)
+
+def _rect_intersects(a,b):
+    ax,ay,aw,ah=a; bx,by,bw,bh=b
+    return not (ax+aw<=bx or bx+bw<=ax or ay+ah<=by or by+bh<=ay)
+
+def _group_ocr_boxes(boxes: List[OCRBox], gap: int = 12):
+    """Return list of tuples: (group_bbox, member_indices)"""
+    n=len(boxes); used=[False]*n; groups=[]
+    for i in range(n):
+        if used[i]: continue
+        rect = boxes[i].bbox
+        members=[i]; used[i]=True
+        changed=True
+        while changed:
+            changed=False
+            infl=_rect_inflate(rect,gap)
+            for j in range(n):
+                if used[j]: continue
+                if _rect_intersects(infl, _rect_inflate(boxes[j].bbox, gap)):
+                    rect=_rect_union(rect, boxes[j].bbox)
+                    members.append(j); used[j]=True; changed=True
+        members = sorted(members, key=lambda k:(boxes[k].bbox[1], boxes[k].bbox[0]))
+        groups.append((rect, members))
+    return groups
 
 # ---------- pages ----------
 @app.get("/")
@@ -237,46 +284,92 @@ def api_auto_translate():
     max_chars = int(j.get("max_chars", 800))
     api_key = os.getenv("TORII_API_KEY")
 
-    results=[]
+    results = []
     for ip in images:
         try:
             src = pathlib.Path(ip)
             if not src.exists():
-                results.append({"image": ip, "error":"not found"}); continue
-            with Image.open(src) as im: _ = im.size
+                results.append({"image": ip, "error": "not found"})
+                continue
 
+            with Image.open(src) as im:
+                _ = im.size
+
+            # OCR → raw line boxes
             ocr = ocr_image(str(src), api_key)
-            boxes = _extract_boxes(ocr)
+            line_boxes = _extract_boxes(ocr)
 
-            src_lines = [b.text.strip()[:max_chars] for b in boxes]
+            # ---- 1) Group lines by bubble ----
+            groups = _group_ocr_boxes(line_boxes, gap=12)
+
+            group_rects, group_src_texts = [], []
+            for rect, idxs in groups:
+                joined = " ".join((line_boxes[k].text or "").strip() for k in idxs).strip()
+                if _is_noise_text(joined):
+                    continue
+                group_rects.append(rect)
+                group_src_texts.append(joined[:max_chars])
+
+            # If nothing useful – still produce empty layout
+            if not group_src_texts:
+                out_json = OUT_DIR / f"{src.stem}.layout.json"
+                with open(out_json, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "source_image": str(src),
+                        "boxes": [],
+                        "translations": [],
+                        "styles": [],
+                        "erasers": [],
+                        "restores": [],
+                    }, f, ensure_ascii=False, indent=2)
+                results.append({"image": src.as_posix(), "layout": out_json.as_posix(),
+                                "clean": "", "edited": ""})
+                continue
+
+            # ---- 2) Translate (1 group = 1 box) ----
             if manga_mode:
-                trans = translate_lines_impl(src_lines, reflow=False)
+                trans = translate_lines_impl(group_src_texts, reflow=False)
             else:
-                try: trans = translate_lines(src_lines, reflow=False)
-                except Exception: trans = translate_lines_impl(src_lines, reflow=False)
+                try:
+                    trans = translate_lines(group_src_texts, reflow=False)
+                except Exception:
+                    trans = translate_lines_impl(group_src_texts, reflow=False)
 
-            while len(trans) < len(boxes):
-               trans.append("")
-            trans = trans[:len(boxes)]
+            # ---- 3) Drop groups with empty/punct-only translations ----
+            def _is_empty_tr(s: str) -> bool:
+                s = (s or "").strip()
+                return (not s) or _NOISE_PUNCT_RE.match(s)
 
+            filt_rects, filt_srcs, filt_trans = [], [], []
+            for r, s, t in zip(group_rects, group_src_texts, trans):
+                if _is_empty_tr(t):
+                    continue
+                filt_rects.append(r); filt_srcs.append(s); filt_trans.append(t)
+
+            # ---- 4) Write layout ----
             out_json = OUT_DIR / f"{src.stem}.layout.json"
-            layout = {
-                "source_image": str(src),
-                "boxes": [{"text": b.text, "bbox": list(b.bbox)} for b in boxes],
-                "translations": trans,
-                "styles": [{"fontSize": None, "color": None} for _ in boxes],
-                "erasers": [],
-                "restores": [],
-            }
-            with open(out_json, "w", encoding="utf-8") as f:
-                json.dump(layout, f, ensure_ascii=False, indent=2)
+            boxes_for_layout = [{"text": s, "bbox": list(r)} for s, r in zip(filt_srcs, filt_rects)]
+            styles = [{"fontSize": None, "color": None} for _ in boxes_for_layout]
 
+            with open(out_json, "w", encoding="utf-8") as f:
+                json.dump({
+                    "source_image": str(src),
+                    "boxes": boxes_for_layout,
+                    "translations": filt_trans,
+                    "styles": styles,
+                    "erasers": [],
+                    "restores": [],
+                }, f, ensure_ascii=False, indent=2)
+
+            # ---- 5) Clean + render ----
             clean_path = _ensure_clean(str(out_json), load_layout(str(out_json)), force=True)
             font_path = DEFAULT_FONT_PATH
             try:
-                img = render_translations_styled(clean_path, boxes, trans, layout["styles"], font_path)
+                boxes_objs = [OCRBox(b["text"], tuple(b["bbox"])) for b in boxes_for_layout]
+                img = render_translations_styled(clean_path, boxes_objs, filt_trans, styles, font_path)
             except Exception:
-                img = render_translations(str(src), boxes, trans, font_path)
+                img = render_translations(str(src), boxes_objs, filt_trans, font_path)
+
             edited_path = OUT_DIR / f"{src.stem}.edited.png"
             img.save(edited_path, "PNG", optimize=False)
 
@@ -286,9 +379,11 @@ def api_auto_translate():
                 "clean": pathlib.Path(clean_path).resolve().as_posix(),
                 "edited": edited_path.resolve().as_posix(),
             })
+
         except Exception as ex:
             results.append({"image": ip, "error": str(ex), "trace": traceback.format_exc()})
-    return {"ok":True, "results": results}
+
+    return {"ok": True, "results": results}
 
 # ---------- open layout ----------
 @app.get("/api/open")
@@ -311,7 +406,7 @@ def api_open():
         "edited_image": str(edited),
     }
 
-# ---------- erase / restore masks + counters (undo-д хэрэгтэй) ----------
+# ---------- erase / restore masks + counters ----------
 @app.post("/api/set_eraser_count")
 def api_set_eraser_count():
     j = request.get_json(force=True, silent=True) or {}
@@ -356,13 +451,27 @@ def api_erase_mask():
     d = load_layout(lp)
     src, _, _, mask_dir = _paths(lp, d["source_image"])
     b64 = data_url.split(",",1)[1]
+    # 1) grayscale
     mask_im = Image.open(io.BytesIO(base64.b64decode(b64))).convert("L")
     W0, H0 = Image.open(src).size
     if mask_im.size != (W0, H0):
         mask_im = mask_im.resize((W0, H0), Image.NEAREST)
+
+    # 2) robust binary mask (threshold + optional dilate + feather)
+    thr = int(os.getenv("ERASE_THRESHOLD", "8"))
+    mask_bin = mask_im.point(lambda p: 255 if p > thr else 0)
+    dil = int(os.getenv("ERASE_DILATE", "3"))
+    if dil > 0:
+        # kernel size = 2*dil+1 (odd)
+        k = max(3, 2*dil+1)
+        mask_bin = mask_bin.filter(ImageFilter.MaxFilter(k))
+    feather = int(os.getenv("ERASE_FEATHER", "0"))
+    if feather > 0:
+        mask_bin = mask_bin.filter(ImageFilter.GaussianBlur(radius=feather))
+
     idx = sum(1 for e in d.get("erasers",[]) if e.get("type")=="mask") + 1
     mpath = mask_dir / f"mask_{idx:03d}.png"
-    mask_im.save(mpath, "PNG")
+    mask_bin.save(mpath, "PNG")
     d["erasers"].append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
@@ -386,9 +495,17 @@ def api_restore_mask():
     W0, H0 = Image.open(src).size
     if mask_im.size != (W0, H0):
         mask_im = mask_im.resize((W0, H0), Image.NEAREST)
+
+    # restore маск ч мөн бинар/feather
+    thr = int(os.getenv("RESTORE_THRESHOLD", "8"))
+    mask_bin = mask_im.point(lambda p: 255 if p > thr else 0)
+    feather = int(os.getenv("RESTORE_FEATHER", "0"))
+    if feather > 0:
+        mask_bin = mask_bin.filter(ImageFilter.GaussianBlur(radius=feather))
+
     idx = sum(1 for e in d.get("restores",[]) if e.get("type")=="mask") + 1
     mpath = mask_dir / f"restore_{idx:03d}.png"
-    mask_im.save(mpath, "PNG")
+    mask_bin.save(mpath, "PNG")
     d.setdefault("restores", []).append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
@@ -659,7 +776,14 @@ EDITOR_HTML = r"""<!doctype html>
   .box{position:absolute;border:2px solid rgba(14,165,233,0);border-radius:8px;cursor:move;user-select:none;background:transparent;pointer-events:auto;transition:border-color .06s ease;}
   .box:hover{ border-color: rgba(14,165,233,.35); }
   .box.active{ border-color: rgba(14,165,233,1); outline: 2px dashed #0ea5e9; }
-  .box .txt{position:absolute;left:6px; top:6px; right:6px; bottom:6px;padding:2px 4px;overflow:hidden;white-space:pre-wrap;line-height:1.15;color:#111;cursor:text;}
+  .box .txt{
+  position:absolute; left:6px; top:6px; right:6px; bottom:6px;
+  padding:2px 4px; overflow:hidden;
+  white-space:pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height:1.15; color:#111; cursor:text;
+  }
   .box .handle{position:absolute; right:-6px; bottom:-6px;width:12px;height:12px;border-radius:3px;background:#0f172a; cursor:nwse-resize; display:none;}
   .box.active .handle{ display:block; }
   .item{border:1px solid #e5e7eb;border-radius:12px;padding:10px;margin:8px 0}
@@ -707,6 +831,8 @@ EDITOR_HTML = r"""<!doctype html>
       <button class="btn" onclick="rebuild()">Rebuild clean</button>
 
       <button class="btn" onclick="autoFitAll()">Auto-fit all</button>
+      <!-- NEW: add blank text box -->
+      <button class="btn" onclick="addBox()">Add box</button>
       <button class="btn" onclick="renderAndDownload()">Download ZIP</button>
     </div>
 
@@ -793,15 +919,19 @@ document.addEventListener('DOMContentLoaded', ()=>{
       ]});
       setActiveBox(boxes.length-1);
       pushState();
+      buildList();
     }
     if(view==='edited' && active>=0 && e.key==='Delete'){
       e.preventDefault();
       boxes[active].remove();
       boxes.splice(active,1);
       layout.boxes.splice(active,1);
+      layout.translations?.splice(active,1);
+      layout.styles?.splice(active,1);
       active=Math.min(active, boxes.length-1);
       setActiveBox(active);
       pushState();
+      buildList();
     }
   });
 
@@ -847,7 +977,6 @@ function setMode(m){
   mode=m;
   const on = (view==='edited');
   brush.style.pointerEvents = on ? 'auto' : 'none';
-  // color by mode (visual only)
   if (mode==='paint') {
     bctx.strokeStyle='rgba(0,128,255,0.45)'; // erase = blue
   } else if (mode==='restore') {
@@ -897,18 +1026,35 @@ function sizeBrush(){
 }
 
 function ensureMinSize(box){
-  const MIN_W=100, MIN_H=44;
-  box.style.width  = Math.max(MIN_W, parseInt(box.style.width)||0) + 'px';
-  box.style.height = Math.max(MIN_H, parseInt(box.style.height)||0) + 'px';
+  const txt = box.querySelector('.txt');
+  const fs = parseInt(window.getComputedStyle(txt).fontSize) || 24;
+  const MIN_W = Math.max(40, Math.round(fs * 6));
+  const MIN_H = Math.max(28, Math.round(fs * 2));
+  const w0 = parseInt(box.dataset.w0) || 0;
+  const curW = parseInt(box.style.width)  || 0;
+  const curH = parseInt(box.style.height) || 0;
+  box.style.width  = Math.max(MIN_W, w0, curW) + 'px';
+  box.style.height = Math.max(MIN_H, curH) + 'px';
 }
+
 function autoFit(i){
   const box = boxes[i]; if(!box) return;
   const txt = box.querySelector('.txt');
   const pad = 16;
-  box.style.width  = 'auto'; box.style.height = 'auto';
-  const w = Math.ceil(txt.scrollWidth  + pad);
-  const h = Math.ceil(txt.scrollHeight + pad);
-  box.style.width  = w + 'px'; box.style.height = h + 'px';
+
+  const w0 = parseInt(box.dataset.w0) || parseInt(box.style.width) || 120;
+  const maxGrow = Math.round(w0 * 1.35);
+
+  box.style.width  = w0 + 'px';
+  box.style.height = 'auto';
+
+  const needW = Math.ceil(txt.scrollWidth + pad);
+  if (needW > w0) {
+    box.style.width = Math.min(needW, maxGrow) + 'px';
+  }
+  const needH = Math.ceil(txt.scrollHeight + pad);
+  box.style.height = needH + 'px';
+
   ensureMinSize(box);
 }
 function autoFitAll(){ (boxes||[]).forEach((_,i)=>autoFit(i)); pushState(); stat('Auto-fit all done'); }
@@ -921,6 +1067,7 @@ function buildOverlays(){
     const box=document.createElement('div'); box.className='box';
     box.style.left=x+'px'; box.style.top=y+'px';
     box.style.width=w+'px'; box.style.height=h+'px';
+    box.dataset.w0 = w; // ⬅️ OCR bbox өргөнийг хадгална
     const txt=document.createElement('div'); txt.className='txt'; txt.contentEditable='true';
     txt.textContent=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
     const style=(layout.styles&&layout.styles[i])?layout.styles[i]:{};
@@ -928,6 +1075,7 @@ function buildOverlays(){
     const hdl=document.createElement('div'); hdl.className='handle';
     box.appendChild(txt); box.appendChild(hdl); overlay.appendChild(box);
     ensureMinSize(box);
+    requestAnimationFrame(()=> autoFit(i));
 
     box.addEventListener('mousedown',e=>{
       if(view!=='edited') return;
@@ -991,6 +1139,31 @@ function buildList(){
   });
 }
 
+// NEW: add empty text box
+function addBox(){
+  if(!layout) return;
+  const fs = parseInt(document.getElementById('fsize').value,10) || 24;
+  const col = document.getElementById('fcol').value || '#111111';
+  const w = Math.max(160, fs*6);
+  const h = Math.max(60,  fs*2);
+  const left = Math.round((img.naturalWidth  - w)/2);
+  const top  = Math.round((img.naturalHeight - h)/2);
+
+  // model
+  layout.boxes = layout.boxes || [];
+  layout.styles = layout.styles || [];
+  layout.translations = layout.translations || [];
+  layout.boxes.push({text:'', bbox:[left, top, w, h]});
+  layout.styles.push({fontSize:fs, color:col});
+  layout.translations.push('');
+
+  // rebuild overlays & list to attach handlers properly
+  buildOverlays();
+  buildList();
+  setActiveBox(layout.boxes.length-1);
+  pushState();
+}
+
 function snapshot(){
   const brushPNG = brush.toDataURL('image/png');
   return {
@@ -1035,6 +1208,7 @@ async function applyStyle(){
   const b=boxes[i]; if(!b) return;
   const txt=b.querySelector('.txt');
   txt.style.fontSize=fs+'px'; txt.style.color=col;
+  autoFit(i);
   const r=await fetch('/api/update_style',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,index:i,fontSize:fs,color:col})});
   const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
   pushState(); stat('Style updated');
@@ -1060,7 +1234,6 @@ function startPaint(e){
   painting=true;
   brush.style.pointerEvents='auto';
 
-  // ALWAYS OPAQUE — no accidental half-transparency
   bctx.globalCompositeOperation='source-over';
   bctx.globalAlpha = 1.0;
 
@@ -1098,7 +1271,7 @@ async function applyMask(){
   t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
   const dataURL = tmp.toDataURL('image/png');
   clearMask();
-  const strength = (+document.getElementById('strength').value || 100)/100;   // 0..1
+  const strength = (+document.getElementById('strength').value || 100)/100;
 
   const timer = beginProgress('Erasing', strength);
   const r=await fetch('/api/erase_mask',{
@@ -1120,7 +1293,7 @@ async function applyRestore(){
   t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
   const dataURL = tmp.toDataURL('image/png');
   clearMask();
-  const strength = (+document.getElementById('strength').value || 100)/100;   // 0..1
+  const strength = (+document.getElementById('strength').value || 100)/100;
 
   const timer = beginProgress('Restoring', strength);
   const r=await fetch('/api/restore_mask',{

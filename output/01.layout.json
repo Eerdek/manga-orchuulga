@@ -1,0 +1,89 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\01.png",
+  "boxes": [
+    {
+      "text": "HEY, HONEY!",
+      "bbox": [
+        431,
+        93,
+        145,
+        130
+      ]
+    },
+    {
+      "text": "HE'S BEEN ACTING WEIRD SINCE THE MOMENT HE CAME HOME!",
+      "bbox": [
+        258,
+        466,
+        145,
+        186
+      ]
+    },
+    {
+      "text": "WHAT DO YOU THINK HAPPENED TO RINTARO?",
+      "bbox": [
+        763,
+        521,
+        145,
+        158
+      ]
+    },
+    {
+      "text": "... THE FACE YOU'D MAKE WHEN WATCHING TV ...!",
+      "bbox": [
+        680,
+        1012,
+        184,
+        130
+      ]
+    }
+  ],
+  "translations": [
+    "Хөөё, Хайраа! Энэ лав биш…",
+    "Гэртээ ирснээсээ хойш л сонин аашлаад байгаа!",
+    "Ринтарод юу болсон гэж чи бодож байна?",
+    "…ТВ үзэж байхдаа гардаг царай чинь…!"
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\mask_001.png",
+      "strength": 1.0
+    },
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\mask_002.png",
+      "strength": 1.0
+    },
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\mask_003.png",
+      "strength": 1.0
+    }
+  ],
+  "restores": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\01.masks\\restore_001.png",
+      "strength": 1.0
+    }
+  ]
+}
