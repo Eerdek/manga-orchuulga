@@ -104,7 +104,7 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
     original = Image.open(src_path).convert("RGBA")
     base = original.copy()
 
-    # ---- ERASE (same as before) ----
+    # ---- ERASE (same as before, +strength blend) ----
     auto_erase = os.getenv("AUTO_ERASE", "1") not in ("0","false","False","no","No")
     erasers = list(data.get("erasers", []))
 
@@ -144,16 +144,28 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
                     x1, y1, x2, y2 = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
                     out = inpaint_with_mask(base, mu8, (int(x1), int(y1), int(x2 - x1), int(y2 - y1)))
                     if out is not None:
-                        base.paste(out)
+                        s = float(e.get("strength", 1.0))
+                        if s >= 0.999:
+                            base.paste(out)
+                        else:
+                            # blend inpaint result over base using strength-scaled mask
+                            m = mask.point(lambda p: int(p * s))
+                            base = Image.composite(out.convert("RGBA"), base, m)
 
-    # ---- RESTORE (overlay original by mask) ----
+    # ---- RESTORE (overlay original by mask with strength) ----
     for r in data.get("restores", []):
-        if r.get("type") != "mask": continue
+        if r.get("type") != "mask":
+            continue
         mf = r.get("mask_file")
-        if not mf or not pathlib.Path(mf).exists(): continue
+        if not mf or not pathlib.Path(mf).exists():
+            continue
         m = Image.open(mf).convert("L")
         if m.size != original.size:
             m = m.resize(original.size, Image.NEAREST)
+        s = float(r.get("strength", 1.0))
+        if s < 0.999:
+            m = m.point(lambda p: int(p * s))
+        # Here original is on top → EXACT original colors on masked area
         base = Image.composite(original, base, m)
 
     base.save(clean, "PNG")
@@ -335,6 +347,7 @@ def api_erase_mask():
     j = request.get_json(force=True, silent=True) or {}
     lp = (j.get("layout_path") or "").strip()
     data_url = j.get("mask_data_url") or ""
+    strength = float(j.get("strength", 1.0))
     if not lp or not pathlib.Path(lp).exists():
         return {"error":"layout not found"}, 400
     if not data_url.startswith("data:image/png;base64,"):
@@ -350,7 +363,7 @@ def api_erase_mask():
     idx = sum(1 for e in d.get("erasers",[]) if e.get("type")=="mask") + 1
     mpath = mask_dir / f"mask_{idx:03d}.png"
     mask_im.save(mpath, "PNG")
-    d["erasers"].append({"type":"mask", "mask_file": str(mpath)})
+    d["erasers"].append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
     return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "eraser_count": len(d["erasers"])}
@@ -360,6 +373,7 @@ def api_restore_mask():
     j = request.get_json(force=True, silent=True) or {}
     lp = (j.get("layout_path") or "").strip()
     data_url = j.get("mask_data_url") or ""
+    strength = float(j.get("strength", 1.0))
     if not lp or not pathlib.Path(lp).exists():
         return {"error":"layout not found"}, 400
     if not data_url.startswith("data:image/png;base64,"):
@@ -375,7 +389,7 @@ def api_restore_mask():
     idx = sum(1 for e in d.get("restores",[]) if e.get("type")=="mask") + 1
     mpath = mask_dir / f"restore_{idx:03d}.png"
     mask_im.save(mpath, "PNG")
-    d.setdefault("restores", []).append({"type":"mask", "mask_file": str(mpath)})
+    d.setdefault("restores", []).append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
     clean_path = _ensure_clean(lp, d, force=True)
     return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "restore_count": len(d["restores"])}
@@ -568,7 +582,7 @@ filesEl.addEventListener('change', ()=>{
 document.addEventListener('dragover', e=>e.preventDefault());
 document.addEventListener('drop', e=>{
   e.preventDefault();
-  const f=[...e.dataTransfer.files].filter(x=>/\\.(png|jpe?g|webp|bmp)$/i.test(x.name));
+  const f=[...e.dataTransfer.files].filter(x=>/\.(png|jpe?g|webp|bmp)$/i.test(x.name));
   if(f.length){
     picked=f;
     const dt=new DataTransfer();
@@ -700,15 +714,19 @@ EDITOR_HTML = r"""<!doctype html>
     <div id="stat"></div>
 
     <div class="hdr">AI Inpaint / Restore</div>
-    <div class="row" id="brushRow">
-      <span style="min-width:90px">Brush</span>
-      <input type="range" id="bsize" min="8" max="200" value="90" style="flex:1">
-      <button class="btn" onclick="setMode('paint')">Erase</button>
-      <button class="btn" onclick="setMode('restore')">Restore</button>
-      <button class="btn" onclick="applyMask()">✓ Apply Erase</button>
-      <button class="btn" onclick="applyRestore()">✓ Apply Restore</button>
-      <button class="btn" onclick="clearMask()">× Clear</button>
-    </div>
+      <div class="row" id="brushRow">
+        <span style="min-width:90px">Brush</span>
+        <input type="range" id="bsize" min="8" max="200" value="90" style="flex:1">
+        <label style="margin-left:8px">Strength
+          <span id="strengthVal">100%</span>
+        </label>
+        <input type="range" id="strength" min="0" max="100" value="100" style="width:160px">
+        <button class="btn" onclick="setMode('paint')">Erase</button>
+        <button class="btn" onclick="setMode('restore')">Restore</button>
+        <button class="btn" onclick="applyMask()">✓ Apply Erase</button>
+        <button class="btn" onclick="applyRestore()">✓ Apply Restore</button>
+        <button class="btn" onclick="clearMask()">× Clear</button>
+      </div>
   </div>
 
 <script>
@@ -721,6 +739,10 @@ let scale=1, boxes=[], active=-1, painting=false;
 let history=[], future=[];
 let dragging=false, resizing=false, dx=0, dy=0, changed=false;
 let eraserCount=0, restoreCount=0;
+
+const statusEl = document.getElementById('stat');
+const strengthEl = document.getElementById('strength');
+const strengthVal = document.getElementById('strengthVal');
 
 document.addEventListener('DOMContentLoaded', ()=>{
   const url = new URL(location.href);
@@ -736,6 +758,8 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
   document.getElementById('left').addEventListener('wheel',e=>{ if(e.ctrlKey){ e.preventDefault(); stepZoom(e.deltaY<0?0.1:-0.1);}},{passive:false});
   brush.addEventListener('mousedown',startPaint); window.addEventListener('mousemove',movePaint); window.addEventListener('mouseup',endPaint);
+
+  strengthEl.addEventListener('input', ()=>{ strengthVal.textContent = (strengthEl.value|0) + '%'; });
 
   window.addEventListener('keydown',e=>{
     if(e.key === 'Escape'){ setActiveBox(-1); return; }
@@ -823,7 +847,7 @@ function setMode(m){
   mode=m;
   const on = (view==='edited');
   brush.style.pointerEvents = on ? 'auto' : 'none';
-  // color by mode
+  // color by mode (visual only)
   if (mode==='paint') {
     bctx.strokeStyle='rgba(0,128,255,0.45)'; // erase = blue
   } else if (mode==='restore') {
@@ -1029,12 +1053,17 @@ async function rebuild(){
   const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
   clean=j.clean_image; await refreshImage(false); stat('Clean updated');
 }
-function stat(m,err=false){ document.getElementById('stat').innerHTML=err?('<span class="err">'+m+'</span>'):('<span class="ok">'+m+'</span>'); }
+function stat(m,err=false){ statusEl.innerHTML=err?('<span class="err">'+m+'</span>'):('<span class="ok">'+m+'</span>'); }
 
 function startPaint(e){
   if(view!=='edited') return;
-  painting=true; brush.style.pointerEvents='auto';
+  painting=true;
+  brush.style.pointerEvents='auto';
+
+  // ALWAYS OPAQUE — no accidental half-transparency
   bctx.globalCompositeOperation='source-over';
+  bctx.globalAlpha = 1.0;
+
   bctx.lineWidth=+document.getElementById('bsize').value;
   bctx.lineCap='round'; bctx.lineJoin='round';
   const p=pt(e); bctx.beginPath(); bctx.moveTo(p.x,p.y);
@@ -1047,6 +1076,21 @@ function endPaint(){ painting=false; }
 function pt(e){ const r=brush.getBoundingClientRect(); return {x:(e.clientX-r.left)/scale, y:(e.clientY-r.top)/scale}; }
 function clearMask(){ bctx.clearRect(0,0,brush.width,brush.height); }
 
+function beginProgress(kind, strength){
+  const t0 = performance.now();
+  stat(`${kind}… (Strength: ${Math.round(strength*100)}%)`);
+  const id = setInterval(()=>{
+    const s = ((performance.now()-t0)/1000).toFixed(1);
+    stat(`${kind}… (Strength: ${Math.round(strength*100)}%) ${s}s`);
+  }, 120);
+  return {t0, id};
+}
+function endProgress(timer, okText){
+  clearInterval(timer.id);
+  const s = ((performance.now()-timer.t0)/1000).toFixed(1);
+  stat(`${okText} (${s}s)`);
+}
+
 async function applyMask(){
   if(!lp) return;
   const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
@@ -1054,12 +1098,21 @@ async function applyMask(){
   t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
   const dataURL = tmp.toDataURL('image/png');
   clearMask();
-  const r=await fetch('/api/erase_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,mask_data_url:dataURL})});
-  const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
+  const strength = (+document.getElementById('strength').value || 100)/100;   // 0..1
+
+  const timer = beginProgress('Erasing', strength);
+  const r=await fetch('/api/erase_mask',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({layout_path:lp,mask_data_url:dataURL,strength})
+  });
+  const j=await r.json();
+  if(!r.ok){ endProgress(timer, 'Erase failed'); stat(j.error,true); return; }
   eraserCount = j.eraser_count ?? eraserCount;
-  clean=j.clean_image; await refreshImage(false); stat('Inpaint OK');
+  clean=j.clean_image; await refreshImage(false);
+  endProgress(timer, 'Inpaint OK');
   pushState();
 }
+
 async function applyRestore(){
   if(!lp) return;
   const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
@@ -1067,10 +1120,18 @@ async function applyRestore(){
   t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
   const dataURL = tmp.toDataURL('image/png');
   clearMask();
-  const r=await fetch('/api/restore_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,mask_data_url:dataURL})});
-  const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
+  const strength = (+document.getElementById('strength').value || 100)/100;   // 0..1
+
+  const timer = beginProgress('Restoring', strength);
+  const r=await fetch('/api/restore_mask',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({layout_path:lp,mask_data_url:dataURL,strength})
+  });
+  const j=await r.json();
+  if(!r.ok){ endProgress(timer, 'Restore failed'); stat(j.error,true); return; }
   restoreCount = j.restore_count ?? restoreCount;
-  clean=j.clean_image; await refreshImage(false); stat('Restore OK');
+  clean=j.clean_image; await refreshImage(false);
+  endProgress(timer, 'Restore OK');
   pushState();
 }
 </script>
