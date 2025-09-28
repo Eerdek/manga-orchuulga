@@ -179,15 +179,21 @@ def _lingva_call(text: str, src: str, tgt: str) -> Optional[str]:
     return None
 
 def lingva_translate_with_retries(text: str, src: str, tgt: str) -> Optional[str]:
-    last = None
-    for attempt in range(1, MAX_TRIES+1):
-        out = _lingva_call(text, src, tgt)
-        if out:
-            return out
-        if attempt < MAX_TRIES:
-            wait = BACKOFF * (2 ** (attempt-1))
-            time.sleep(wait * (0.9 + 0.2*random.random()))
-    return last
+    # эх хэлний боломжит хувилбарууд (давхардалгүй)
+    cand = []
+    for s in ["auto", (src or "").lower(), "ja", "en", "zh", "ko"]:
+        if s and s not in cand:
+            cand.append(s)
+    for s in cand:
+        last = None
+        for attempt in range(1, MAX_TRIES + 1):
+            out = _lingva_call(text, s, tgt)
+            if out:
+                return out
+            if attempt < MAX_TRIES:
+                wait = BACKOFF * (2 ** (attempt - 1))
+                time.sleep(wait * (0.9 + 0.2 * random.random()))
+    return None
 
 # -------- Fallbacks for style.* --------
 def _fallback_apply_glossary_tokenwise(text: str) -> str:
@@ -420,84 +426,81 @@ def translate_lines_impl(lines,
                          system_override: Optional[str]=None,
                          local_only=False, force_online=False,
                          boxes: Optional[List[Tuple[int,int,int,int]]] = None):
-    """
-    lines: OCR мөрүүд
-    boxes: OCR мөр бүрийн bbox (x,y,w,h). Байвал геометрээр бүлэглэнэ.
-    """
     if not lines:
         return []
 
-    # 0) Бүлэглэлт
-    if boxes and len(boxes) == len(lines):
-        merged_lines, groups = _coalesce_by_geometry([l if isinstance(l,str) else "" for l in lines], boxes)
-    else:
-        merged_lines, groups = _coalesce_by_text([l if isinstance(l,str) else "" for l in lines])
-
-    # 1) Бүлэг бүрийг орчуулах
-    translated: List[str] = []
-    for s in merged_lines:
-        src_text = s.strip()
+    out = []
+    for src_text in lines:
+        src_text = (src_text or "").strip()
         if not src_text:
-            translated.append("")
+            out.append("")
             continue
 
-        # Glossary
+        # 1. Glossary
         g = apply_glossary(src_text)
         if g is not None:
-            out = post_polish_mn(g) if do_polish else g
-            translated.append(out); tm_put(src_text, out, "glossary"); continue
+            result = post_polish_mn(g) if do_polish else g
+            out.append(result)
+            tm_put(src_text, result, "glossary")
+            continue
 
-        # KEEP (бүхэл текст KEEP бол шууд алгасна)
+        # 2. KEEP (хэрвээ яг хэвээр үлдээх ёстой бол)
         norm = _normalize_token(src_text)
         if norm in _KEEP_NORM:
-            translated.append(src_text); tm_put(src_text, src_text, "keep"); continue
+            out.append(src_text)
+            tm_put(src_text, src_text, "keep")
+            continue
 
-        # SFX
+        # 3. SFX
         if is_sfx(src_text):
             val = translate_sfx(src_text)
-            out = post_polish_mn(val) if do_polish else val
-            translated.append(out); tm_put(src_text, out, "sfx"); continue
+            result = post_polish_mn(val) if do_polish else val
+            out.append(result)
+            tm_put(src_text, result, "sfx")
+            continue
 
-        # TM cache
+        # 4. TM cache (хуучин орчуулга байгаа бол)
         if not force_online:
             cached = tm_get(src_text)
             if cached is not None and cached != src_text:
-                translated.append(cached); continue
+                out.append(cached)
+                continue
 
-        # Local-only
+        # 5. Local-only (offline glossary-based fallback)
         if local_only:
             val = apply_glossary_tokenwise(src_text)
-            out = post_polish_mn(val) if do_polish else val
-            translated.append(out); continue
+            result = post_polish_mn(val) if do_polish else val
+            out.append(result)
+            continue
 
-        # ---------- KEEP дотоод токенуудыг масклах ----------
+        # 6. KEEP токенуудыг масклах
         masked_text, keep_vals = _mask_keep_tokens(src_text)
 
-        # Онлайн
+        # 7. API-р орчуулах
         tr = lingva_translate_with_retries(masked_text, source_lang, target_lang)
-        if (not tr or _same_ignorecase(tr, masked_text)) and _has_latin(masked_text):
-            tr2 = lingva_translate_with_retries(masked_text, "en", target_lang)
-            if tr2 and not _same_ignorecase(tr2, masked_text):
-                tr = tr2
+        if not tr or _same_ignorecase(tr, masked_text):
+            for s in ["en", "auto", "ja"]:
+                tr2 = lingva_translate_with_retries(masked_text, s, target_lang)
+                if tr2 and not _same_ignorecase(tr2, masked_text):
+                    tr = tr2
+                    break
 
-        if tr and not _same_ignorecase(tr, masked_text):
-            tr = _unmask_keep_tokens(tr, keep_vals)          # KEEP-г яг хэлбэрээр нь сэргээе
+        # Хэрвээ API-гийн орчуулга амжилттай бол
+        if tr:
+            tr = _unmask_keep_tokens(tr, keep_vals)          # KEEP-г яг хэлбэрээр нь сэргээх
             final = apply_glossary_tokenwise(tr)
             final = apply_semantic_rules(final)
             final = post_polish_mn(final) if do_polish else final
-            translated.append(final); tm_put(src_text, final, "lingva")
+            out.append(final)
+            tm_put(src_text, final, "lingva")
         else:
+            # Орчуулга амжилтгүй бол (API-гаас буцаасан текст англи хэвээр бол)
             val = apply_glossary_tokenwise(src_text)
             final = post_polish_mn(val) if do_polish else val
-            translated.append(final)
+            out.append(final)
             if final != src_text:
                 tm_put(src_text, final, "local-fallback")
 
-    # 2) Эх OCR мөрүүдэд тараах — бүлгийн эхний box-д л байрлуулна
-    out = [""] * len(lines)
-    for t, grp in zip(translated, groups):
-        if grp:
-            out[grp[0]] = t
     return out
 
 def translate_lines(lines, source_lang: str = SRC_DEFAULT, target_lang: str = TGT_DEFAULT,
