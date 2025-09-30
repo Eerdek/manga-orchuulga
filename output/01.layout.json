@@ -1,0 +1,151 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\01.png",
+  "boxes": [
+    {
+      "text": "HEY.",
+      "bbox": [
+        533,
+        57,
+        37,
+        24
+      ]
+    },
+    {
+      "text": "HEY, HONEY!",
+      "bbox": [
+        454,
+        130,
+        64,
+        43
+      ]
+    },
+    {
+      "text": "THIS CLEARLY ISN'T ...",
+      "bbox": [
+        138,
+        332,
+        73,
+        63
+      ]
+    },
+    {
+      "text": "WHISPER",
+      "bbox": [
+        312,
+        371,
+        38,
+        15
+      ]
+    },
+    {
+      "text": "WHISPER",
+      "bbox": [
+        824,
+        394,
+        38,
+        28
+      ]
+    },
+    {
+      "text": "CLANCE",
+      "bbox": [
+        19,
+        473,
+        49,
+        56
+      ]
+    },
+    {
+      "text": "HE'S BEEN ACTING WEIRD SINCE THE MOMENT HE CAME HOME!",
+      "bbox": [
+        261,
+        504,
+        125,
+        111
+      ]
+    },
+    {
+      "text": "WHAT DO YOU THINK HAPPENED TO RINTARO?",
+      "bbox": [
+        763,
+        521,
+        106,
+        83
+      ]
+    },
+    {
+      "text": "HUH?",
+      "bbox": [
+        584,
+        601,
+        52,
+        23
+      ]
+    },
+    {
+      "text": "... THE FACE YOU'D MAKE WHEN WATCHING TV ...!",
+      "bbox": [
+        680,
+        1012,
+        183,
+        187
+      ]
+    }
+  ],
+  "translations": [
+    "Хөөё.",
+    "ХӨӨЁ, ХАЙРАА!",
+    "Энэ лав биш…",
+    "WHISPER",
+    "WHISPER",
+    "Огцом",
+    "Гэртээ ирснээсээ хойш л сонин аашлаад байгаа!",
+    "Ринтарод юу болсон гэж чи бодож байна?",
+    "Аа?",
+    "…ТВ үзэж байхдаа гардаг царай чинь…!"
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": 16,
+      "color": "#111111"
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": [],
+  "restores": []
+}

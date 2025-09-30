@@ -546,6 +546,33 @@ def api_rebuild_clean():
     return {"ok":True, "clean_image": clean_path}
 
 # ---------- style / render ----------
+@app.post("/api/save_translations")
+def api_save_translations():
+    j = request.get_json(force=True, silent=True) or {}
+    lp = (j.get("layout_path") or "").strip()
+    tr = j.get("translations")
+    rebuild = bool(j.get("rebuild_clean", True))  # default: True
+
+    if not lp or not pathlib.Path(lp).exists():
+        return {"error": "layout not found"}, 400
+    if not isinstance(tr, list):
+        return {"error": "bad translations"}, 400
+
+    d = load_layout(lp)
+    # translations уртыг boxes-тэй тааруулна
+    if len(tr) != len(d.get("boxes", [])):
+        tr = (tr + [""] * len(d["boxes"]))[:len(d["boxes"])]
+
+    d["translations"] = tr
+    save_layout(lp, d)
+
+    clean_path = ""
+    if rebuild:
+        # Хэрэв та өмнөх AUTO_ERASE skip-ийн patch-ийг хийсэн бол
+        # хоосон орчуулгатай боксуудыг дахиж арилгахгүй тул оригинал үлдэнэ.
+        clean_path = _ensure_clean(lp, d, force=True)
+
+    return {"ok": True, "clean_image": clean_path}
 @app.post("/api/update_style")
 def api_update_style():
     j = request.get_json(force=True, silent=True) or {}

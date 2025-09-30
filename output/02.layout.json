@@ -1,0 +1,168 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\02.png",
+  "boxes": [
+    {
+      "text": "WAP H",
+      "bbox": [
+        91,
+        6,
+        144,
+        130
+      ]
+    },
+    {
+      "text": "PLING BUT WITH THE WAY THINGS STAND, I CAN'T ASK HIM EITHER ...",
+      "bbox": [
+        161,
+        30,
+        221,
+        94
+      ]
+    },
+    {
+      "text": "MAYBE SOMETHING WENT WRONG WHEN HE GAVE HER THE PRESENT ...?",
+      "bbox": [
+        414,
+        63,
+        144,
+        406
+      ]
+    },
+    {
+      "text": "ISN'T HE THE SAME AS ALWAYS?",
+      "bbox": [
+        814,
+        58,
+        144,
+        158
+      ]
+    },
+    {
+      "text": "HE DOES HAVE A BIT OF A SHARP GAZE, BUT IT WAS NEVER THIS BAD!",
+      "bbox": [
+        714,
+        195,
+        147,
+        296
+      ]
+    },
+    {
+      "text": "ZOOM",
+      "bbox": [
+        106,
+        678,
+        144,
+        75
+      ]
+    },
+    {
+      "text": "RIN- TARO ?!",
+      "bbox": [
+        717,
+        920,
+        168,
+        48
+      ]
+    },
+    {
+      "text": "DAM DAM",
+      "bbox": [
+        240,
+        983,
+        144,
+        323
+      ]
+    },
+    {
+      "text": "I SWEAR, HE COULDN'T BE MORE OBVIOUS ...",
+      "bbox": [
+        625,
+        1000,
+        144,
+        103
+      ]
+    },
+    {
+      "text": "DAM DAME DAM",
+      "bbox": [
+        400,
+        659,
+        161,
+        32
+      ]
+    }
+  ],
+  "translations": [
+    "УУР Х",
+    "АМЛАСАН Ч БҮХ ЗҮЙЛ ЗОГСОЖ БАЙГАА ТУЛ БИ ТҮҮНЭЭС… АСУУЖ ЧАДАХГҮЙ",
+    "МАГАДГҮЙ ТЭР ТҮҮНД ОДООГИЙН… ӨГӨХӨД ЯМАР НЭГ ЗҮЙЛ БУРУУ БОЛСОН БОЛОВ УУ?",
+    "ТЭР УРЬДЫН АДИЛ БИШ ГЭЖ ҮҮ?",
+    "ТЭР БАГА ЗЭРЭГ ХУРЦ ХАРЦТАЙ, ГЭХДЭЭ ЭНЭ НЬ ХЭЗЭЭ Ч ИЙМ МУУ БАЙГААГҮЙ!",
+    "RIN-TARO?!",
+    "ДАЛАН",
+    "БИ ТАНГАРАГЛАЖ БАЙНА, ТЭР ИЛҮҮ ТОД… БАЙЖ ЧАДАХГҮЙ БАЙСАН",
+    "ДЭЙ ДЭМ ДЭМ",
+    ""
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": 16,
+      "color": "#ff0000"
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\02.masks\\mask_001.png",
+      "strength": 1.0
+    }
+  ],
+  "restores": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\02.masks\\restore_001.png",
+      "strength": 1.0
+    },
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\02.masks\\restore_002.png",
+      "strength": 1.0
+    }
+  ]
+}

@@ -28,6 +28,7 @@ GLOSSARY_MAP = {
     "what do you think happened to rintaro?": "Ринтарод юу болсон гэж чи бодож байна?",
     "what do you think happened": "Юу болсон гэж чи бодож байна",
     "to rintaro?": "Ринтарод?",
+    "HEY, HONEY!": "ХӨӨЁ, ХАЙРАА!",
 
     "he's been acting weird since the moment he came home":
         "Гэртээ ирснээсээ хойш л сонин аашлаад байгаа",
