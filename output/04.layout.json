@@ -1,0 +1,289 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\04.png",
+  "boxes": [
+    {
+      "text": "Can we talk right now?",
+      "bbox": [
+        438,
+        145,
+        145,
+        103
+      ]
+    },
+    {
+      "text": "tu",
+      "bbox": [
+        635,
+        297,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "<x",
+      "bbox": [
+        701,
+        286,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "123",
+      "bbox": [
+        420,
+        343,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        648,
+        348,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "ti",
+      "bbox": [
+        575,
+        364,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "空白",
+      "bbox": [
+        705,
+        335,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "THUMP",
+      "bbox": [
+        229,
+        544,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "... THUMP",
+      "bbox": [
+        248,
+        1043,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "1 \"",
+      "bbox": [
+        137,
+        1117,
+        145,
+        186
+      ]
+    },
+    {
+      "text": "THUMP",
+      "bbox": [
+        384,
+        1083,
+        145,
+        186
+      ]
+    },
+    {
+      "text": "Can we talk right now?",
+      "bbox": [
+        718,
+        1062,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "TAP Ye' les",
+      "bbox": [
+        103,
+        1246,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "Y Yeah",
+      "bbox": [
+        203,
+        1225,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "SHE ... ALREADY TRIED THE CAKE, RIGHT?",
+      "bbox": [
+        203,
+        1225,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "I WONDER WHAT SHE'S GONNA SAY ... 00",
+      "bbox": [
+        223,
+        1311,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "... C",
+      "bbox": [
+        223,
+        1311,
+        145,
+        48
+      ]
+    },
+    {
+      "text": "to",
+      "bbox": [
+        223,
+        1311,
+        144,
+        48
+      ]
+    },
+    {
+      "text": "AA",
+      "bbox": [
+        223,
+        1311,
+        15,
+        16
+      ]
+    }
+  ],
+  "translations": [
+    "Бид яг одоо ярьж чадах уу?",
+    "Шударга",
+    "<x",
+    "123",
+    "Нь",
+    "Нь",
+    "Хоосон",
+    "ЦОХИХ",
+    "Тийм ээ",
+    "ТЭР… АЛЬ ХЭДИЙН БЯЛУУГ ТУРШИЖ ҮЗСЭН, ТИЙМ ҮҮ?",
+    "ТЭР ЮУ ХЭЛЭХ ВЭ ГЭЖ БИ ГАЙХАЖ БАЙНА… 00",
+    "… C",
+    "Нь",
+    "АА",
+    "",
+    "",
+    "",
+    "",
+    ""
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    },
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\04.masks\\mask_001.png",
+      "strength": 1.0
+    }
+  ],
+  "restores": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\04.masks\\restore_001.png",
+      "strength": 1.0
+    }
+  ]
+}

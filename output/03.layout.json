@@ -1,0 +1,42 @@
+{
+  "source_image": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\input\\03.png",
+  "boxes": [
+    {
+      "text": "Chapter 31: Impressions",
+      "bbox": [
+        400,
+        659,
+        161,
+        48
+      ]
+    }
+  ],
+  "translations": [
+    ""
+  ],
+  "styles": [
+    {
+      "fontSize": null,
+      "color": null
+    }
+  ],
+  "erasers": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\03.masks\\mask_001.png",
+      "strength": 1.0
+    },
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\03.masks\\mask_002.png",
+      "strength": 1.0
+    }
+  ],
+  "restores": [
+    {
+      "type": "mask",
+      "mask_file": "C:\\Users\\User\\Downloads\\torii-openai-image-translator\\output\\03.masks\\restore_001.png",
+      "strength": 1.0
+    }
+  ]
+}

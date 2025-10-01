@@ -10,7 +10,7 @@ import numpy as np
 from utils import OCRBox, erase_text_area, inpaint_with_mask
 from renderer import render_translations_styled, render_translations
 from ocr_torii import ocr_image
-from translate_lingva import translate_lines, translate_lines_impl
+from translate_lingva import translate_lines_impl
 from config import DEFAULT_FONT_PATH
 
 app = Flask(__name__, static_url_path="/static")
@@ -277,13 +277,7 @@ def api_auto_translate():
                 continue
 
             # ---- 2) Translate ----
-            if manga_mode:
-                trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
-            else:
-                try:
-                    trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
-                except Exception:
-                    trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
+            trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
 
             # ---- 3) Filter empties ----
             def _is_empty_tr(src: str, tr: str) -> bool:
@@ -310,8 +304,8 @@ def api_auto_translate():
                     "restores": [],
                 }, f, ensure_ascii=False, indent=2)
 
-            # ---- 5) Clean + render ----
-            clean_path = _ensure_clean(str(out_json), load_layout(str(out_json)), force=True)
+            # ---- 5) Clean + render (анхны build үед auto=True) ----
+            clean_path = _ensure_clean(str(out_json), load_layout(str(out_json)), force=True, auto=True)
             font_path = DEFAULT_FONT_PATH
             try:
                 boxes_objs = [OCRBox(b["text"], tuple(b["bbox"])) for b in boxes_for_layout]
@@ -345,7 +339,12 @@ def api_open():
     d = load_layout(lp)
     while len(d["styles"]) < len(d["boxes"]):
         d["styles"].append({"fontSize": None, "color": None})
-    _, clean, edited, _ = _paths(lp, d["source_image"])
+    src_path, clean, edited, _ = _paths(lp, d["source_image"])
+
+    # Auto-erase зөвхөн анхны нээлтэд: clean байхгүй үед л auto=True
+    if not clean.exists():
+        _ensure_clean(lp, d, force=True, auto=True)
+
     return {
         "source_image": d["source_image"],
         "boxes": [{"text": b.text, "bbox": list(b.bbox)} for b in d["boxes"]],
@@ -358,7 +357,10 @@ def api_open():
     }
 
 # ---------- erase / restore masks + counters ----------
-def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
+def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False, auto=False) -> str:
+    """
+    auto=True үед л анхны text auto-erase-г ажиллуулна. Дараагийн дуудлагад auto=False.
+    """
     src_path, clean, _, _ = _paths(layout_path, data["source_image"])
     if clean.exists() and not force:
         return str(clean)
@@ -366,10 +368,8 @@ def _ensure_clean(layout_path: str, data: Dict[str, Any], force=False) -> str:
     original = Image.open(src_path).convert("RGBA")
     base = original.copy()
 
-    auto_erase = os.getenv("AUTO_ERASE", "1") not in ("0","false","False","no","No")
-
-    # 1) AUTO erase
-    if auto_erase:
+    # 1) AUTO erase (зөвхөн анхны удаа)
+    if auto:
         for b in data.get("boxes", []):
             try:
                 erase_text_area(
@@ -443,7 +443,7 @@ def api_set_eraser_count():
         return {"error":"bad count"}, 400
     d["erasers"] = d.get("erasers", [])[:count]
     save_layout(lp, d)
-    clean_path = _ensure_clean(lp, d, force=True)
+    clean_path = _ensure_clean(lp, d, force=True, auto=False)
     return {"ok": True, "clean_image": clean_path, "eraser_count": len(d["erasers"])}
 
 @app.post("/api/set_restore_count")
@@ -458,7 +458,7 @@ def api_set_restore_count():
         return {"error":"bad count"}, 400
     d["restores"] = d.get("restores", [])[:count]
     save_layout(lp, d)
-    clean_path = _ensure_clean(lp, d, force=True)
+    clean_path = _ensure_clean(lp, d, force=True, auto=False)
     return {"ok": True, "clean_image": clean_path, "restore_count": len(d["restores"])}
 
 @app.post("/api/erase_mask")
@@ -495,7 +495,7 @@ def api_erase_mask():
     mask_bin.save(mpath, "PNG")
     d["erasers"].append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
-    clean_path = _ensure_clean(lp, d, force=True)
+    clean_path = _ensure_clean(lp, d, force=True, auto=False)
     return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "eraser_count": len(d["erasers"])}
 
 @app.post("/api/restore_mask")
@@ -528,7 +528,7 @@ def api_restore_mask():
     mask_bin.save(mpath, "PNG")
     d.setdefault("restores", []).append({"type":"mask", "mask_file": str(mpath), "strength": strength})
     save_layout(lp, d)
-    clean_path = _ensure_clean(lp, d, force=True)
+    clean_path = _ensure_clean(lp, d, force=True, auto=False)
     return {"ok":True, "clean_image": clean_path, "mask_file": str(mpath), "restore_count": len(d["restores"])}
 
 # ---------- rebuild clean ----------
@@ -539,7 +539,7 @@ def api_rebuild_clean():
     if not lp or not pathlib.Path(lp).exists():
         return {"error":"layout not found"}, 400
     d = load_layout(lp)
-    clean_path = _ensure_clean(lp, d, force=True)
+    clean_path = _ensure_clean(lp, d, force=True, auto=False)
     return {"ok":True, "clean_image": clean_path}
 
 # ---------- style / render ----------
@@ -564,7 +564,7 @@ def api_save_translations():
 
     clean_path = ""
     if rebuild:
-        clean_path = _ensure_clean(lp, d, force=True)
+        clean_path = _ensure_clean(lp, d, force=True, auto=False)
 
     return {"ok": True, "clean_image": clean_path}
 
@@ -597,7 +597,7 @@ def api_render():
         tr = d.get("translations", [])
     if len(tr) != len(d["boxes"]):
         tr = (tr + [""]*len(d["boxes"]))[:len(d["boxes"])]
-    clean_path = _ensure_clean(lp, d, force=False)
+    clean_path = _ensure_clean(lp, d, force=False, auto=False)
     font_path = DEFAULT_FONT_PATH
     _, _, edited_img, _ = _paths(lp, d["source_image"])
     try:
@@ -664,7 +664,7 @@ def api_download_zip():
             for lp in paths:
                 try:
                     d = load_layout(str(lp))
-                    clean_path = _ensure_clean(str(lp), d, force=False)
+                    clean_path = _ensure_clean(str(lp), d, force=False, auto=False)
                     font_path = DEFAULT_FONT_PATH
                     try:
                         img = render_translations_styled(clean_path, d["boxes"], d.get("translations", []), d.get("styles", []), font_path)
@@ -780,6 +780,9 @@ async function start(){
       toast(firstErr ? ('Failed: '+firstErr.error) : 'No layouts produced', true);
       return;
     }
+    // Save batch to LS (auto-restore)
+    localStorage.setItem('tz_last_lp', okLayouts[0] || '');
+    localStorage.setItem('tz_last_idx', '0');
     const q = encodeURIComponent(JSON.stringify(okLayouts));
     location.href = '/editor?layouts=' + q; // batch → editor
   }catch(ex){
@@ -796,7 +799,7 @@ function toast(m,err=false){
 </body></html>
 """
 
-# ===================== UPDATED EDITOR WITH AUTOSAVE =====================
+# ===================== EDITOR =====================
 EDITOR_HTML = r"""<!doctype html>
 <html>
 <head><meta charset="utf-8"/>
@@ -808,10 +811,10 @@ EDITOR_HTML = r"""<!doctype html>
   #left{position:relative;overflow:auto}
   #right{background:var(--panel);padding:14px;overflow:auto;border-left:1px solid #e5e7eb}
   .hdr{position:sticky;top:0;background:#fff;padding:10px 0;border-bottom:1px solid #e5e7eb;font-weight:700;font-size:18px;z-index:3}
-  #stage{position:relative;display:inline-block;margin:14px}
-  #img{display:block;max-width:none}
-  #brush{position:absolute;left:0;top:0;pointer-events:none}
-  #overlay{position:absolute;left:0;top:0;pointer-events:none}
+  #stage{position:relative;display:inline-block;margin:14px; transform-origin: top left;}
+  #img{display:block;max-width:none;z-index:0;position:relative}       /* z-index 0 */
+  #overlay{position:absolute;left:0;top:0;z-index:1;pointer-events:auto} /* z-index 1 */
+  #brush{position:absolute;left:0;top:0;z-index:2;pointer-events:none}   /* z-index 2 */
   #ui{position:fixed;left:16px;top:16px;display:flex;gap:8px;z-index:5;align-items:center}
   .btn{padding:8px 10px;border-radius:10px;border:1px solid #d1d5db;background:#0f172a;color:#fff;cursor:pointer}
   .chip{padding:6px 10px;border:1px solid var(--border);border-radius:999px;background:#f8fafc;color:#111;cursor:pointer}
@@ -823,12 +826,12 @@ EDITOR_HTML = r"""<!doctype html>
   .box:hover{ border-color: rgba(14,165,233,.35); }
   .box.active{ border-color: rgba(14,165,233,1); outline: 2px dashed #0ea5e9; }
   .box .txt{
-  position:absolute; left:6px; top:6px; right:6px; bottom:6px;
-  padding:2px 4px; overflow:hidden;
-  white-space:pre-wrap;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-  line-height:1.15; color:#111; cursor:text;
+    position:absolute; left:6px; top:6px; right:6px; bottom:6px;
+    padding:2px 4px; overflow:hidden;
+    white-space:pre-wrap;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    line-height:1.15; color:#111; cursor:text;
   }
   .box .handle{position:absolute; right:-6px; bottom:-6px;width:12px;height:12px;border-radius:3px;background:#0f172a; cursor:nwse-resize; display:none;}
   .box.active .handle{ display:block; }
@@ -837,6 +840,7 @@ EDITOR_HTML = r"""<!doctype html>
   .item .o{font-size:12px;color:#6b7280;white-space:pre-wrap}
   .item textarea{width:100%;min-height:64px;border:1px solid #e5e7eb;border-radius:8px;padding:8px;font:inherit}
   .tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  #progress{font-size:12px;color:#6b7280}
 </style>
 </head>
 <body>
@@ -848,14 +852,17 @@ EDITOR_HTML = r"""<!doctype html>
       <button class="btn" onclick="redo()" title="Ctrl+Y">Redo</button>
       <span class="chip" id="vEd" onclick="setView('edited')">Edited (live)</span>
       <span class="chip" id="vOr" onclick="setView('original')">Original</span>
+      <span class="chip" id="mSel" onclick="setMode('select')">Select</span>
+      <span class="chip" id="mEr" onclick="setMode('paint')">Erase</span>
+      <span class="chip" id="mRe" onclick="setMode('restore')">Restore</span>
       <button class="btn" onclick="prevItem()" title="Previous">◀</button>
       <select id="batchSelect" onchange="jumpTo(this.value)" style="max-width:260px"></select>
       <button class="btn" onclick="nextItem()" title="Next">▶</button>
     </div>
     <div id="stage">
       <img id="img" src="">
-      <canvas id="brush"></canvas>
       <div id="overlay"></div>
+      <canvas id="brush"></canvas>
     </div>
   </div>
 
@@ -892,40 +899,39 @@ EDITOR_HTML = r"""<!doctype html>
           <span id="strengthVal">100%</span>
         </label>
         <input type="range" id="strength" min="0" max="100" value="100" style="width:160px">
-        <button class="btn" onclick="setMode('paint')">Erase</button>
-        <button class="btn" onclick="setMode('restore')">Restore</button>
         <button class="btn" onclick="applyMask()">✓ Apply Erase</button>
         <button class="btn" onclick="applyRestore()">✓ Apply Restore</button>
         <button class="btn" onclick="clearMask()">× Clear</button>
       </div>
+      <div id="progress"></div>
   </div>
 
 <script>
-// ===== AUTOSAVE CONSTS / UTILS =====
-let autosaveTimer = null;
-let serversaveTimer = null;
-const LOCAL_DEBOUNCE_MS = 500;      // textarea/drag etc.
-const SERVER_DEBOUNCE_MS = 8000;    // server sync less frequent
-function keyFor(lp){ return 'tz_draft::'+(lp||''); }
-function nowIso(){ return new Date().toISOString(); }
-function debounce(fn, ms){
-  let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); };
-}
+// ===== Debounce settings =====
+const SAVE_TR_MS = 400;    // textarea/.txt input → /api/save_translations
+const SAVE_BOX_MS = 300;   // mouseup after drag/resize → /api/update_boxes
+function debounce(fn, ms){ let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); }; }
 
-// ===== EXISTING GLOBALS =====
+// ===== Globals =====
 let batch = []; let idx = 0;
 
-let layout=null, lp=null, clean='', edited='', view='edited', mode='paint';
+let layout=null, lp=null, clean='', edited='', view='edited', mode='select';
 let img=document.getElementById('img'), brush=document.getElementById('brush'), bctx=brush.getContext('2d');
 let overlay=document.getElementById('overlay');
 let scale=1, boxes=[], active=-1, painting=false;
 let history=[], future=[];
 let dragging=false, resizing=false, dx=0, dy=0, changed=false;
 let eraserCount=0, restoreCount=0;
+let didFitOnce=false;
 
 const statusEl = document.getElementById('stat');
 const strengthEl = document.getElementById('strength');
 const strengthVal = document.getElementById('strengthVal');
+const progressEl = document.getElementById('progress');
+
+// API debounced callers (нэрийг шаардлагын дагуу)
+const autosaveTranslationsDebounced = debounce(serverSaveTranslations, SAVE_TR_MS);
+const saveBoxesDebounced = debounce(serverSaveBoxes, SAVE_BOX_MS);
 
 document.addEventListener('DOMContentLoaded', ()=>{
   const url = new URL(location.href);
@@ -933,11 +939,22 @@ document.addEventListener('DOMContentLoaded', ()=>{
   const single = url.searchParams.get('layout');
 
   if (ls) {
-    try { batch = JSON.parse(ls); idx = 0; fillBatchSelect(); openLayoutByIndex(idx); } catch(e) { console.error(e); }
+    try {
+      batch = JSON.parse(ls);
+      const savedIdx = parseInt(localStorage.getItem('tz_last_idx')||'0',10);
+      idx = isNaN(savedIdx)?0:Math.min(Math.max(savedIdx,0), batch.length-1);
+      fillBatchSelect();
+      openLayoutByIndex(idx);
+    } catch(e) { console.error(e); }
   } else if (single) {
     document.getElementById('layout').value = single; openLayout();
+  } else {
+    // Restore last opened
+    const last = localStorage.getItem('tz_last_lp');
+    if(last){ document.getElementById('layout').value = last; openLayout(); }
   }
   setView('edited');
+  setMode('select');
 
   document.getElementById('left').addEventListener('wheel',e=>{ if(e.ctrlKey){ e.preventDefault(); stepZoom(e.deltaY<0?0.1:-0.1);}},{passive:false});
   brush.addEventListener('mousedown',startPaint); window.addEventListener('mousemove',movePaint); window.addEventListener('mouseup',endPaint);
@@ -950,7 +967,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     if(e.ctrlKey && e.key.toLowerCase()==='y'){ e.preventDefault(); redo(); }
     if(view!=='edited') return;
 
-    if(active>=0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){
+    if(mode==='select' && active>=0 && ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)){
       e.preventDefault();
       const b=boxes[active]; if(!b) return;
       const step = e.shiftKey?10:1;
@@ -962,7 +979,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
       if(e.key==='ArrowDown')  y+=step;
       if(x!==ox || y!==oy){ b.style.left=x+'px'; b.style.top=y+'px'; changed=true; }
     }
-    if(view==='edited' && active>=0 && e.ctrlKey && (e.key==='d' || e.key==='D')){
+    if(view==='edited' && mode==='select' && active>=0 && e.ctrlKey && (e.key==='d' || e.key==='D')){
       e.preventDefault();
       const src=boxes[active];
       const clone=src.cloneNode(true);
@@ -974,11 +991,15 @@ document.addEventListener('DOMContentLoaded', ()=>{
         parseInt(clone.style.left),parseInt(clone.style.top),
         parseInt(clone.style.width),parseInt(clone.style.height)
       ]});
+      layout.translations.push('');
+      layout.styles.push({fontSize: parseInt(document.getElementById('fsize').value||'24',10), color: document.getElementById('fcol').value||'#111111'});
       setActiveBox(boxes.length-1);
       pushState();
       buildList();
+      saveBoxesDebounced();
+      autosaveTranslationsDebounced();
     }
-    if(view==='edited' && active>=0 && e.key==='Delete'){
+    if(view==='edited' && mode==='select' && active>=0 && e.key==='Delete'){
       e.preventDefault();
       boxes[active].remove();
       boxes.splice(active,1);
@@ -989,11 +1010,12 @@ document.addEventListener('DOMContentLoaded', ()=>{
       setActiveBox(active);
       pushState();
       buildList();
+      saveBoxesDebounced();
+      autosaveTranslationsDebounced();
     }
   });
 
   overlay.addEventListener('mousedown',e=>{ if(e.target===overlay){ setActiveBox(-1); } });
-  setMode('paint');
 });
 
 function fillBatchSelect(){
@@ -1010,7 +1032,10 @@ function fillBatchSelect(){
 async function openLayoutByIndex(i){
   if (i<0 || i>=batch.length) return;
   idx = i;
-  document.getElementById('layout').value = batch[idx];
+  localStorage.setItem('tz_last_idx', String(idx));
+  const path = batch[idx];                     // FIX: path undefined болох алдаа
+  localStorage.setItem('tz_last_lp', path);    // хадгал
+  document.getElementById('layout').value = path;
   await openLayout();
   const sel = document.getElementById('batchSelect');
   if (sel) sel.value = idx.toString();
@@ -1026,18 +1051,22 @@ function setView(v){
   const showOverlay = (v==='edited');
   overlay.style.display = showOverlay ? 'block' : 'none';
   brush.style.display   = showOverlay ? 'block' : 'none';
-  brush.style.pointerEvents = showOverlay ? 'auto' : 'none';
   refreshImage(true);
 }
 
 function setMode(m){
   mode=m;
-  const on = (view==='edited');
-  brush.style.pointerEvents = on ? 'auto' : 'none';
-  if (mode==='paint') {
-    bctx.strokeStyle='rgba(0,128,255,0.45)';
-  } else if (mode==='restore') {
-    bctx.strokeStyle='rgba(0,200,0,0.45)';
+  document.getElementById('mSel').classList.toggle('active', m==='select');
+  document.getElementById('mEr').classList.toggle('active', m==='paint');
+  document.getElementById('mRe').classList.toggle('active', m==='restore');
+
+  if (mode==='select'){
+    overlay.style.pointerEvents = 'auto';
+    brush.style.pointerEvents = 'none';
+  } else {
+    overlay.style.pointerEvents = 'none';
+    brush.style.pointerEvents = 'auto';
+    bctx.strokeStyle = (mode==='paint') ? 'rgba(0,128,255,0.45)' : 'rgba(0,200,0,0.45)';
   }
 }
 
@@ -1048,6 +1077,7 @@ function fit(){
   const wrap=document.getElementById('left'); const pad=60;
   const a=(wrap.clientWidth-pad)/img.naturalWidth, b=(wrap.clientHeight-pad)/img.naturalHeight;
   scale=Math.min(a,b); document.getElementById('stage').style.transform='scale('+scale+')';
+  didFitOnce = true;
 }
 
 async function openLayout(){
@@ -1057,24 +1087,29 @@ async function openLayout(){
   layout=j; lp=path; clean=j.clean_image; edited=j.edited_image;
   eraserCount = (layout.erasers || []).length;
   restoreCount = (layout.restores || []).length;
+  localStorage.setItem('tz_last_lp', lp);
+
+  // уртуудыг тэгшилж баталгаажуулна
+  while ((layout.styles||[]).length < (layout.boxes||[]).length) (layout.styles||[]).push({fontSize:null,color:null});
+  while ((layout.translations||[]).length < (layout.boxes||[]).length) (layout.translations||[]).push('');
+
   await refreshImage(true);
   buildOverlays();
   buildList();
   clearHistory(); pushState();
   stat('OK: '+path);
 
-  // Try recover local draft (if any)
-  loadDraftLocalIfNewer();
+  // local autosave (draft) сэргээх боломж байж болно — энд хүсвэл нэмж болно.
 }
 
 async function refreshImage(reset=false){
   if(!layout) return;
   const url = (view==='original')
     ? '/api/img?path='+encodeURIComponent(layout.source_image)
-    : '/api/img?path='+encodeURIComponent(clean);
+    : '/api/img?path='+encodeURIComponent(clean); // Edited үед clean-г заавал ашиглана
   await new Promise(res=>{
     const tmp=new Image();
-    tmp.onload=()=>{ img.src=url+'&t='+(Date.now()); img.onload=()=>{ sizeBrush(); if(reset) fit(); res(); }; };
+    tmp.onload=()=>{ img.src=url+'&t='+(Date.now()); img.onload=()=>{ sizeBrush(); if(reset && !didFitOnce) fit(); res(); }; };
     tmp.src=url+'&probe=1&t='+(Date.now());
   });
 }
@@ -1137,8 +1172,9 @@ function buildOverlays(){
     ensureMinSize(box);
     requestAnimationFrame(()=> autoFit(i));
 
+    // Drag/Resize (select mode)
     box.addEventListener('mousedown',e=>{
-      if(view!=='edited') return;
+      if(view!=='edited' || mode!=='select') return;
       active=i; setActiveBox(i);
       const r=box.getBoundingClientRect();
       changed=false;
@@ -1146,7 +1182,7 @@ function buildOverlays(){
       document.body.style.userSelect='none';
     });
     window.addEventListener('mousemove',e=>{
-      if(view!=='edited' || active!==i) return;
+      if(view!=='edited' || mode!=='select' || active!==i) return;
       if(dragging){
         const stg=brush.getBoundingClientRect();
         const nx=Math.round((e.clientX-stg.left)/scale - dx);
@@ -1163,9 +1199,22 @@ function buildOverlays(){
         }
       }
     });
-    window.addEventListener('mouseup',()=>{ if(dragging||resizing){ if(changed) pushState(); } dragging=false; resizing=false; changed=false; });
-    txt.addEventListener('input', ()=>{ autoFit(i); scheduleAutosave(); });
-    box.addEventListener('dblclick', ()=>{ if(view==='edited'){ autoFit(i); pushState(); }});
+    window.addEventListener('mouseup',()=>{ 
+      if(dragging||resizing){ 
+        if(changed){ pushState(); saveBoxesDebounced(); } // mouseup → boxes autosave (300ms debounce)
+      } 
+      dragging=false; resizing=false; changed=false; 
+      document.body.style.userSelect='auto';
+    });
+
+    // ✨ Text sync (overlay → textarea)
+    txt.addEventListener('input', ()=>{
+      const ta = document.querySelector('#it'+i+' textarea');
+      if(ta && ta.value !== txt.textContent) ta.value = txt.textContent;
+      autoFit(i); pushState(); autosaveTranslationsDebounced();
+    });
+
+    box.addEventListener('dblclick', ()=>{ if(view==='edited' && mode==='select'){ autoFit(i); pushState(); }});
     boxes.push(box);
   });
   setActiveBox(-1);
@@ -1186,13 +1235,21 @@ function collectBoxes(){
     ]
   }));
 }
+function getTranslations(){
+  return [...document.querySelectorAll('#list textarea')].map(t=>t.value);
+}
 function buildList(){
   const host=document.getElementById('list'); host.innerHTML='';
   (layout.boxes||[]).forEach((b,i)=>{
     const it=document.createElement('div'); it.className='item'; it.id='it'+i;
     const o=document.createElement('div'); o.className='o'; o.textContent=b.text||'';
     const ta=document.createElement('textarea'); ta.value=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; autoFit(i); scheduleAutosave(); });
+    // ✨ Text sync (textarea → overlay)
+    ta.addEventListener('input',()=>{
+      const el=boxes[i]?.querySelector('.txt'); 
+      if(el && el.textContent !== ta.value) el.textContent=ta.value; 
+      autoFit(i); pushState(); autosaveTranslationsDebounced();
+    });
     ta.addEventListener('change',()=>{ pushState(); });
     it.addEventListener('click',()=>{ setActiveBox(i); boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'}); });
     host.appendChild(it); it.appendChild(o); it.appendChild(ta);
@@ -1219,13 +1276,15 @@ function addBox(){
   buildList();
   setActiveBox(layout.boxes.length-1);
   pushState();
+  saveBoxesDebounced();
+  autosaveTranslationsDebounced();
 }
 
-// ===== SNAPSHOT / AUTOSAVE CORE =====
+// ===== Snapshot / Undo-Redo =====
 function snapshot(){
   const brushPNG = brush.toDataURL('image/png');
   return {
-    tr: [...document.querySelectorAll('#list textarea')].map(t=>t.value),
+    tr: getTranslations(),
     bx: collectBoxes(),
     st: layout.styles ? JSON.parse(JSON.stringify(layout.styles)) : [],
     ec: eraserCount,
@@ -1249,70 +1308,41 @@ async function applySnapshot(s){
   }
 }
 
-function saveDraftLocal(){
-  if(!lp || !layout) return;
-  const data = { ts: nowIso(), lp, snap: snapshot() };
-  try{ localStorage.setItem(keyFor(lp), JSON.stringify(data)); }catch(e){}
-}
-function loadDraftLocalIfNewer(){
-  if(!lp) return false;
-  const raw = localStorage.getItem(keyFor(lp));
-  if(!raw) return false;
-  try{
-    const data = JSON.parse(raw);
-    if(data && data.snap){
-      applySnapshot(data.snap).then(()=>{ stat('Recovered draft (autosave)', false); });
-      return true;
-    }
-  }catch(e){}
-  return false;
-}
-function clearDraftLocal(){
-  if(lp) localStorage.removeItem(keyFor(lp));
-}
-
-const autosaveLocalDebounced = debounce(()=>saveDraftLocal(), LOCAL_DEBOUNCE_MS);
-
-function scheduleAutosave(){
-  autosaveLocalDebounced();
-  if(serversaveTimer) clearTimeout(serversaveTimer);
-  serversaveTimer = setTimeout(()=>doServerAutosave(), SERVER_DEBOUNCE_MS);
-}
-
-async function doServerAutosave(){
-  if(!lp) return;
-  try{
-    await fetch('/api/update_boxes',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ layout_path: lp, boxes: collectBoxes() })
-    });
-    const tr = [...document.querySelectorAll('#list textarea')].map(t=>t.value);
-    await fetch('/api/save_translations',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({ layout_path: lp, translations: tr, rebuild_clean: false })
-    });
-    stat('Autosaved ✓', false);
-  }catch(e){
-    stat('Autosave failed: '+e, true);
-  }
-}
-
 function pushState(){
   history.push(snapshot());
   if(history.length>100) history.shift();
   future.length=0;
-  scheduleAutosave();
 }
 function clearHistory(){ history.length=0; future.length=0; }
 function undo(){ if(history.length<=1) return; const cur=history.pop(); future.push(cur); applySnapshot(history[history.length-1]); }
 function redo(){ if(future.length===0) return; const s=future.pop(); history.push(s); applySnapshot(s); }
 
-async function saveBoxes(){
+// ===== Server autosave =====
+async function serverSaveBoxes(){
   if(!lp) return;
-  const r=await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
-  const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
-  stat('Boxes saved: '+j.changed);
+  try{
+    const r=await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
+    const j=await r.json();
+    if(!r.ok){ stat(j.error,true); return; }
+    stat('Boxes saved ✓');
+  }catch(e){
+    stat('Boxes save failed: '+e, true);
+  }
 }
+async function serverSaveTranslations(){
+  if(!lp) return;
+  try{
+    const tr = getTranslations();
+    const r=await fetch('/api/save_translations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ layout_path: lp, translations: tr, rebuild_clean: false })});
+    const j=await r.json();
+    if(!r.ok){ stat(j.error,true); return; }
+    stat('Autosaved ✓');
+  }catch(e){
+    stat('Autosave failed: '+e, true);
+  }
+}
+
+async function saveBoxes(){ await serverSaveBoxes(); }
 async function applyStyle(){
   const i = Math.max(0, active);
   const fs=parseInt(document.getElementById('fsize').value,10);
@@ -1324,15 +1354,16 @@ async function applyStyle(){
   const r=await fetch('/api/update_style',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp,index:i,fontSize:fs,color:col})});
   const j=await r.json(); if(!r.ok){ stat(j.error,true); return; }
   pushState(); stat('Style updated');
+  autosaveTranslationsDebounced();
 }
 async function renderAndDownload(){
   if(!lp) return;
-  await fetch('/api/update_boxes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, boxes:collectBoxes()})});
-  await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, translations:[...document.querySelectorAll('#list textarea')].map(t=>t.value)})});
+  await serverSaveBoxes();
+  await serverSaveTranslations();
+  await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, translations:getTranslations()})});
   const items=encodeURIComponent(JSON.stringify(batch.length ? batch : [lp]));
   location.href='/api/download_zip?include=edited&items='+items;
   stat('Rendered & downloading ZIP…');
-  clearDraftLocal(); // optional: export хийсэн тул draft-ийг цэвэрлэнэ
 }
 async function rebuild(){
   if(!lp) return;
@@ -1342,8 +1373,9 @@ async function rebuild(){
 }
 function stat(m,err=false){ statusEl.innerHTML=err?('<span class="err">'+m+'</span>'):('<span class="ok">'+m+'</span>'); }
 
+// ===== Brush paint/restore with live dot =====
 function startPaint(e){
-  if(view!=='edited') return;
+  if(view!=='edited' || (mode!=='paint' && mode!=='restore')) return;
   painting=true;
   brush.style.pointerEvents='auto';
   bctx.globalCompositeOperation='source-over';
@@ -1351,14 +1383,60 @@ function startPaint(e){
   bctx.lineWidth=+document.getElementById('bsize').value;
   bctx.lineCap='round'; bctx.lineJoin='round';
   const p=pt(e); bctx.beginPath(); bctx.moveTo(p.x,p.y);
+  // live dot to avoid gaps
+  bctx.arc(p.x, p.y, Math.max(1, bctx.lineWidth/2 - 1), 0, Math.PI*2);
+  bctx.fillStyle=(mode==='paint'?'rgba(0,128,255,0.45)':'rgba(0,200,0,0.45)'); 
+  bctx.fill();
 }
 function movePaint(e){
-  if(!painting || view!=='edited') return;
-  const p=pt(e); bctx.lineTo(p.x,p.y); bctx.stroke();
+  if(!painting || view!=='edited' || (mode!=='paint' && mode!=='restore')) return;
+  const p=pt(e);
+  bctx.lineTo(p.x,p.y);
+  bctx.strokeStyle=(mode==='paint'?'rgba(0,128,255,0.45)':'rgba(0,200,0,0.45)');
+  bctx.stroke();
+  // tiny dot to prevent dash artifacts
+  bctx.beginPath(); bctx.arc(p.x, p.y, 0.01, 0, Math.PI*2); bctx.fillStyle=bctx.strokeStyle; bctx.fill();
 }
 function endPaint(){ painting=false; }
 function pt(e){ const r=brush.getBoundingClientRect(); return {x:(e.clientX-r.left)/scale, y:(e.clientY-r.top)/scale}; }
 function clearMask(){ bctx.clearRect(0,0,brush.width,brush.height); }
+
+async function applyMask(){
+  if(!lp) return;
+  const png = brush.toDataURL('image/png');
+  const strength = (+strengthEl.value||100)/100;
+  await withProgress('Erasing…', async ()=>{
+    const r = await fetch('/api/erase_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, mask_data_url: png, strength})});
+    const j = await r.json();
+    if(!r.ok){ throw new Error(j.error || 'erase failed'); }
+    clean = j.clean_image || clean;
+    eraserCount = j.eraser_count ?? eraserCount;
+    clearMask();
+    await refreshImage(false);
+  });
+  stat('Inpaint OK');
+}
+async function applyRestore(){
+  if(!lp) return;
+  const png = brush.toDataURL('image/png');
+  const strength = (+strengthEl.value||100)/100;
+  await withProgress('Restoring…', async ()=>{
+    const r = await fetch('/api/restore_mask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({layout_path:lp, mask_data_url: png, strength})});
+    const j = await r.json();
+    if(!r.ok){ throw new Error(j.error || 'restore failed'); }
+    clean = j.clean_image || clean;
+    restoreCount = j.restore_count ?? restoreCount;
+    clearMask();
+    await refreshImage(false);
+  });
+  stat('Restore OK');
+}
+async function withProgress(label, fn){
+  let sec=0; progressEl.textContent = label+' 0s';
+  const t = setInterval(()=>{ sec++; progressEl.textContent = label+' '+sec+'s'; }, 1000);
+  try{ await fn(); }catch(e){ stat(String(e), true); }
+  finally{ clearInterval(t); progressEl.textContent=''; }
+}
 </script>
 </body></html>
 """

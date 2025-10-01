@@ -10,7 +10,7 @@ $env:INPAINT_URL   = "http://127.0.0.1:8090/api/v1/inpaint"
 $env:INPAINT_MODEL = "lama"
 $env:INPAINT_HD    = "Original"
 $env:INPAINT_SIZE  = "4096"
-$env:WATERMARK_PATH = "C:\FEDoUP\watermark.png"
+$env:WATERMARK_PATH = "C:\Users\User\Downloads\torii-openai-image-translator\watermark\watermark.png"
 
 python app.py
 
