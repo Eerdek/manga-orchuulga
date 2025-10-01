@@ -276,9 +276,8 @@ def api_auto_translate():
                 if pause_s>0: _time.sleep(pause_s)
                 continue
 
-            # ---- 2) Translate (1 group = 1 box) ----
+            # ---- 2) Translate ----
             if manga_mode:
-                # boxes=group_rects → коалэслинг унтарч 1:1 болно
                 trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
             else:
                 try:
@@ -286,10 +285,8 @@ def api_auto_translate():
                 except Exception:
                     trans = translate_lines_impl(group_src_texts, reflow=False, boxes=group_rects)
 
-
-            # ---- 3) Drop groups with empty/punct-only translations ----
+            # ---- 3) Filter empties ----
             def _is_empty_tr(src: str, tr: str) -> bool:
-              # Зөвхөн ТР болон SRC хоёулаа “дуу авианы/пунктуацын” тохиолдолд л хая
               return _is_noise_text(tr) and _is_noise_text(src)
 
             filt_rects, filt_srcs, filt_trans = [], [], []
@@ -559,7 +556,6 @@ def api_save_translations():
         return {"error": "bad translations"}, 400
 
     d = load_layout(lp)
-    # translations уртыг boxes-тэй тааруулна
     if len(tr) != len(d.get("boxes", [])):
         tr = (tr + [""] * len(d["boxes"]))[:len(d["boxes"])]
 
@@ -568,11 +564,10 @@ def api_save_translations():
 
     clean_path = ""
     if rebuild:
-        # Хэрэв та өмнөх AUTO_ERASE skip-ийн patch-ийг хийсэн бол
-        # хоосон орчуулгатай боксуудыг дахиж арилгахгүй тул оригинал үлдэнэ.
         clean_path = _ensure_clean(lp, d, force=True)
 
     return {"ok": True, "clean_image": clean_path}
+
 @app.post("/api/update_style")
 def api_update_style():
     j = request.get_json(force=True, silent=True) or {}
@@ -801,6 +796,7 @@ function toast(m,err=false){
 </body></html>
 """
 
+# ===================== UPDATED EDITOR WITH AUTOSAVE =====================
 EDITOR_HTML = r"""<!doctype html>
 <html>
 <head><meta charset="utf-8"/>
@@ -905,6 +901,18 @@ EDITOR_HTML = r"""<!doctype html>
   </div>
 
 <script>
+// ===== AUTOSAVE CONSTS / UTILS =====
+let autosaveTimer = null;
+let serversaveTimer = null;
+const LOCAL_DEBOUNCE_MS = 500;      // textarea/drag etc.
+const SERVER_DEBOUNCE_MS = 8000;    // server sync less frequent
+function keyFor(lp){ return 'tz_draft::'+(lp||''); }
+function nowIso(){ return new Date().toISOString(); }
+function debounce(fn, ms){
+  let t; return (...args)=>{ clearTimeout(t); t=setTimeout(()=>fn(...args), ms); };
+}
+
+// ===== EXISTING GLOBALS =====
 let batch = []; let idx = 0;
 
 let layout=null, lp=null, clean='', edited='', view='edited', mode='paint';
@@ -1054,6 +1062,9 @@ async function openLayout(){
   buildList();
   clearHistory(); pushState();
   stat('OK: '+path);
+
+  // Try recover local draft (if any)
+  loadDraftLocalIfNewer();
 }
 
 async function refreshImage(reset=false){
@@ -1153,8 +1164,8 @@ function buildOverlays(){
       }
     });
     window.addEventListener('mouseup',()=>{ if(dragging||resizing){ if(changed) pushState(); } dragging=false; resizing=false; changed=false; });
+    txt.addEventListener('input', ()=>{ autoFit(i); scheduleAutosave(); });
     box.addEventListener('dblclick', ()=>{ if(view==='edited'){ autoFit(i); pushState(); }});
-    txt.addEventListener('input', ()=> autoFit(i));
     boxes.push(box);
   });
   setActiveBox(-1);
@@ -1181,7 +1192,7 @@ function buildList(){
     const it=document.createElement('div'); it.className='item'; it.id='it'+i;
     const o=document.createElement('div'); o.className='o'; o.textContent=b.text||'';
     const ta=document.createElement('textarea'); ta.value=(layout.translations&&layout.translations[i])?layout.translations[i]:'';
-    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; autoFit(i); });
+    ta.addEventListener('input',()=>{ const el=boxes[i]?.querySelector('.txt'); if(el) el.textContent=ta.value; autoFit(i); scheduleAutosave(); });
     ta.addEventListener('change',()=>{ pushState(); });
     it.addEventListener('click',()=>{ setActiveBox(i); boxes[i]?.scrollIntoView({block:'center',behavior:'smooth'}); });
     host.appendChild(it); it.appendChild(o); it.appendChild(ta);
@@ -1210,6 +1221,7 @@ function addBox(){
   pushState();
 }
 
+// ===== SNAPSHOT / AUTOSAVE CORE =====
 function snapshot(){
   const brushPNG = brush.toDataURL('image/png');
   return {
@@ -1236,7 +1248,61 @@ async function applySnapshot(s){
     await refreshImage(false);
   }
 }
-function pushState(){ history.push(snapshot()); if(history.length>100) history.shift(); future.length=0; }
+
+function saveDraftLocal(){
+  if(!lp || !layout) return;
+  const data = { ts: nowIso(), lp, snap: snapshot() };
+  try{ localStorage.setItem(keyFor(lp), JSON.stringify(data)); }catch(e){}
+}
+function loadDraftLocalIfNewer(){
+  if(!lp) return false;
+  const raw = localStorage.getItem(keyFor(lp));
+  if(!raw) return false;
+  try{
+    const data = JSON.parse(raw);
+    if(data && data.snap){
+      applySnapshot(data.snap).then(()=>{ stat('Recovered draft (autosave)', false); });
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+function clearDraftLocal(){
+  if(lp) localStorage.removeItem(keyFor(lp));
+}
+
+const autosaveLocalDebounced = debounce(()=>saveDraftLocal(), LOCAL_DEBOUNCE_MS);
+
+function scheduleAutosave(){
+  autosaveLocalDebounced();
+  if(serversaveTimer) clearTimeout(serversaveTimer);
+  serversaveTimer = setTimeout(()=>doServerAutosave(), SERVER_DEBOUNCE_MS);
+}
+
+async function doServerAutosave(){
+  if(!lp) return;
+  try{
+    await fetch('/api/update_boxes',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ layout_path: lp, boxes: collectBoxes() })
+    });
+    const tr = [...document.querySelectorAll('#list textarea')].map(t=>t.value);
+    await fetch('/api/save_translations',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ layout_path: lp, translations: tr, rebuild_clean: false })
+    });
+    stat('Autosaved ✓', false);
+  }catch(e){
+    stat('Autosave failed: '+e, true);
+  }
+}
+
+function pushState(){
+  history.push(snapshot());
+  if(history.length>100) history.shift();
+  future.length=0;
+  scheduleAutosave();
+}
 function clearHistory(){ history.length=0; future.length=0; }
 function undo(){ if(history.length<=1) return; const cur=history.pop(); future.push(cur); applySnapshot(history[history.length-1]); }
 function redo(){ if(future.length===0) return; const s=future.pop(); history.push(s); applySnapshot(s); }
@@ -1266,6 +1332,7 @@ async function renderAndDownload(){
   const items=encodeURIComponent(JSON.stringify(batch.length ? batch : [lp]));
   location.href='/api/download_zip?include=edited&items='+items;
   stat('Rendered & downloading ZIP…');
+  clearDraftLocal(); // optional: export хийсэн тул draft-ийг цэвэрлэнэ
 }
 async function rebuild(){
   if(!lp) return;
@@ -1292,65 +1359,6 @@ function movePaint(e){
 function endPaint(){ painting=false; }
 function pt(e){ const r=brush.getBoundingClientRect(); return {x:(e.clientX-r.left)/scale, y:(e.clientY-r.top)/scale}; }
 function clearMask(){ bctx.clearRect(0,0,brush.width,brush.height); }
-
-function beginProgress(kind, strength){
-  const t0 = performance.now();
-  stat(`${kind}… (Strength: ${Math.round(strength*100)}%)`);
-  const id = setInterval(()=>{
-    const s = ((performance.now()-t0)/1000).toFixed(1);
-    stat(`${kind}… (Strength: ${Math.round(strength*100)}%) ${s}s`);
-  }, 120);
-  return {t0, id};
-}
-function endProgress(timer, okText){
-  clearInterval(timer.id);
-  const s = ((performance.now()-timer.t0)/1000).toFixed(1);
-  stat(`${okText} (${s}s)`);
-}
-
-async function applyMask(){
-  if(!lp) return;
-  const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
-  const t=tmp.getContext('2d'); t.fillStyle='black'; t.fillRect(0,0,tmp.width,tmp.height);
-  t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
-  const dataURL = tmp.toDataURL('image/png');
-  clearMask();
-  const strength = (+document.getElementById('strength').value || 100)/100;
-
-  const timer = beginProgress('Erasing', strength);
-  const r=await fetch('/api/erase_mask',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({layout_path:lp,mask_data_url:dataURL,strength})
-  });
-  const j=await r.json();
-  if(!r.ok){ endProgress(timer, 'Erase failed'); stat(j.error,true); return; }
-  eraserCount = j.eraser_count ?? eraserCount;
-  clean=j.clean_image; await refreshImage(false);
-  endProgress(timer, 'Inpaint OK');
-  pushState();
-}
-
-async function applyRestore(){
-  if(!lp) return;
-  const tmp=document.createElement('canvas'); tmp.width=brush.width; tmp.height=brush.height;
-  const t=tmp.getContext('2d'); t.fillStyle='black'; t.fillRect(0,0,tmp.width,tmp.height);
-  t.globalCompositeOperation='source-over'; t.drawImage(brush,0,0);
-  const dataURL = tmp.toDataURL('image/png');
-  clearMask();
-  const strength = (+document.getElementById('strength').value || 100)/100;
-
-  const timer = beginProgress('Restoring', strength);
-  const r=await fetch('/api/restore_mask',{
-    method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({layout_path:lp,mask_data_url:dataURL,strength})
-  });
-  const j=await r.json();
-  if(!r.ok){ endProgress(timer, 'Restore failed'); stat(j.error,true); return; }
-  restoreCount = j.restore_count ?? restoreCount;
-  clean=j.clean_image; await refreshImage(false);
-  endProgress(timer, 'Restore OK');
-  pushState();
-}
 </script>
 </body></html>
 """
